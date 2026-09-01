@@ -57,24 +57,53 @@ for the full design (section numbers below refer to it).
   `qpf init-project --spec projects/headlands/project_spec.yaml`
   produces the exact folder layout from section 5.
 
-## Currently building / not yet started
-
-**Milestone 2 — reusable research core** (not started)
+**Milestone 2 — reusable research core**
 
 - `project_factory/data/base.py` (`DataAdapter` protocol, section 11.1),
-  `cache.py`, `timestamps.py`, `quality.py`.
-- `project_factory/features/base.py` (`FeatureBuilder` protocol +
-  `FeatureDefinition` with `available_at`/`ex_ante`, section 11.2).
-- `project_factory/models/base.py` (`ResearchModel` protocol, section
-  11.3) + `linear.py` (OLS/Ridge/Logistic wrappers), `tree.py` (GBT),
-  `diagnostics.py`. `neural.py` deferred until an archetype needs it.
-- `project_factory/validation/walk_forward.py` (chronological-only
-  `WalkForwardValidator`, section 11.4) + `leakage.py` (audits every
-  feature's `available_at` against decision time).
-- Experiment recording (section 12) — JSON/JSONL records, no DB.
-- `project_factory/orchestrator.py` (pseudocode in section 25) —
-  `run_stage()` is what `qpf run --stage ...` currently imports and will
-  call once this lands.
+  `cache.py` (dumb on-disk parquet fetch cache), `timestamps.py`
+  (`assert_ex_ante` / `LookaheadError` — the real mechanism behind
+  `strictly_ex_ante`), `quality.py` (`DataQualityReport`: duplicates,
+  gaps, sort order, missingness).
+- `project_factory/features/base.py` — `FeatureBuilder` protocol +
+  `FeatureDefinition` (`available_at`/`ex_ante`/`leakage_risk_notes`,
+  section 11.2 / section 3.7).
+- `project_factory/models/base.py` (`ResearchModel` protocol) +
+  `linear.py` (`NaiveBaselineModel`, `OLSModel`, `RidgeModel`,
+  `LogisticModel` — ladder steps 1-3), `tree.py`
+  (`GradientBoostedTreeModel` — ladder step 4), `diagnostics.py`
+  (regression/classification metrics, `condition_number`,
+  `coefficient_table`). Small neural baseline (ladder step 5)
+  deliberately not built — section 3.4 says don't add one without a
+  role-specific reason; add per-archetype if Milestone 3/4 needs it.
+- `project_factory/validation/walk_forward.py` — row-count-based
+  `WalkForwardValidator` (rolling or expanding window); train always
+  strictly precedes test, splits always chronological, random k-fold is
+  structurally impossible to request (Gate 4). `leakage.py` —
+  `audit_leakage` checks every ex-ante `FeatureDefinition.available_at`
+  against a decision-time column; `safe_feature_columns` excludes
+  anything that fails (Gate 2).
+- `project_factory/experiments.py` — `ExperimentRecord` (section 12
+  schema) + `run_walk_forward_experiment` (fits/evaluates one model
+  across every fold, one record per fold so drift/instability stays
+  visible) + JSONL `save_experiments`/`load_experiments`.
+- Tests: `test_data_quality.py`, `test_leakage.py`, `test_models.py`,
+  `test_walk_forward.py`, `test_experiments.py` — **39/39 tests passing
+  overall** (12 from Milestone 1 + 27 new), ruff clean. Verified: OLS
+  recovers known synthetic coefficients, Ridge shrinks coefficients and
+  converges to OLS as alpha->0, condition number is materially higher
+  under synthetic collinearity, GBT beats the naive baseline, walk-forward
+  splits are provably chronological/non-overlapping, the leakage audit
+  actually catches a feature whose `available_at` is after decision time.
+- **Not yet built** (moved here from the original Milestone 2 scope,
+  because it can't be meaningfully written or tested without a real data
+  adapter to wire against — see Milestone 3):
+  `project_factory/orchestrator.py` (`run_stage()`, section 25
+  pseudocode). `qpf run`/`qpf report` already defer-import it and are
+  gated on `IMPLEMENTED_ARCHETYPES` (currently empty), so nothing is
+  broken by its absence — `qpf analyze-role`/`show-spec`/`init-project`
+  are unaffected.
+
+## Currently building / not yet started
 
 **Milestone 3 — Archetype B end-to-end (predictive market making)** (not started)
 
@@ -84,7 +113,12 @@ for the full design (section numbers below refer to it).
   about matching any employer's actual production market — section 6,
   Archetype B).
 - Microstructure feature builder (imbalance, microprice, spread, signed
-  flow, realized vol, trade intensity).
+  flow, realized vol, trade intensity) built on `features/base.py`.
+- `project_factory/orchestrator.py` — wires `registry.get_data_adapter`
+  -> `get_feature_builder` -> `validation.leakage.audit_leakage` ->
+  `experiments.run_walk_forward_experiment` -> strategy -> failure
+  analyzer -> reporter, per the section-25 pseudocode. This is the
+  first time it can be written for real.
 - `trading/signals.py`, `sizing.py`, `costs.py`, `pnl.py`, `inventory.py`,
   `execution/` fill simulator; robustness suite (fees, latency, fill
   model, regime, ablation, drift — section 6 Archetype B list).
@@ -108,7 +142,7 @@ for the full design (section numbers below refer to it).
 
 ## Blockers
 
-- None currently blocking Milestone 1 (complete). Milestone 3's data
+- None currently blocking Milestones 1-2 (complete). Milestone 3's data
   adapter will need a real, verified, freely-accessible L2/trade data
   source chosen before feature work starts — this needs a short web-research
   pass (section 21) rather than guessing an API shape.
@@ -119,9 +153,12 @@ for the full design (section numbers below refer to it).
 
 ```bash
 source .venv/bin/activate
-pytest tests/ -v   # confirm Milestone 1 still green before starting Milestone 2
+pytest tests/ -v   # confirm Milestones 1-2 still green (39/39) before starting Milestone 3
 ```
 
-Then start Milestone 2 with `project_factory/data/base.py` and
-`project_factory/features/base.py` (the two Protocols everything else
-depends on), followed by `validation/walk_forward.py`.
+Then start Milestone 3: research-verify a concrete, documented, free L2/
+trade data source (section 21 — don't guess an API shape), write
+`project_factory/data/adapters/<archetype>.py` implementing `DataAdapter`
+against it, then `project_factory/features/microstructure.py`
+implementing `FeatureBuilder`, then `project_factory/orchestrator.py`
+wiring them to the Milestone 2 validation/experiments core.
