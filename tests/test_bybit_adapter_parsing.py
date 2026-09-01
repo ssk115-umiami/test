@@ -9,6 +9,7 @@ import pandas as pd
 import pytest
 
 from project_factory.data.adapters.bybit_l2 import _aggregate_trades_to_seconds, _parse_orderbook_records
+from project_factory.data.errors import DataSourceSchemaError
 
 
 def test_parse_orderbook_records_extracts_snapshot_only():
@@ -72,7 +73,7 @@ def test_aggregate_trades_to_seconds_sums_signed_volume():
 
 def test_aggregate_trades_to_seconds_raises_on_unrecognized_schema():
     trades = pd.DataFrame({"timestamp": [1, 2], "unexpected_col": ["a", "b"]})
-    with pytest.raises(ValueError):
+    with pytest.raises(DataSourceSchemaError):
         _aggregate_trades_to_seconds(trades)
 
 

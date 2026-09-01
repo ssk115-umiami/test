@@ -23,7 +23,7 @@ import pandas as pd
 from project_factory.trading.costs import fee_amount
 from project_factory.trading.execution.fill_simulator import ProbabilisticFillSimulator
 from project_factory.trading.inventory import clip_inventory, inventory_skew
-from project_factory.trading.pnl import compute_equity_curve, compute_pnl_series, max_drawdown, sharpe_ratio, turnover
+from project_factory.trading.pnl import assemble_trading_result
 
 
 class MarketMakingStrategy:
@@ -121,24 +121,15 @@ class MarketMakingStrategy:
             cash[t] = new_cash
             prev_inventory, prev_cash = new_inventory, new_cash
 
-        equity = compute_equity_curve(cash, inventory, mid_price)
-        pnl = compute_pnl_series(equity)
         fill_sizes = np.where(bid_filled, self.order_size, 0.0) - np.where(ask_filled, self.order_size, 0.0)
-
         n_quotes = 2 * n
         n_fills = int(bid_filled.sum() + ask_filled.sum())
 
-        return {
-            "total_pnl": float(equity[-1] - equity[0]),
-            "sharpe": sharpe_ratio(pnl),
-            "max_drawdown": max_drawdown(equity),
-            "fill_rate": n_fills / n_quotes if n_quotes else 0.0,
-            "n_fills": n_fills,
-            "turnover": turnover(fill_sizes),
-            "avg_inventory": float(np.mean(inventory)),
-            "max_abs_inventory": float(np.max(np.abs(inventory))),
-            "final_inventory": float(inventory[-1]),
-            "equity_curve": equity.tolist(),
-            "pnl_series": pnl.tolist(),
-            "inventory_series": inventory.tolist(),
-        }
+        return assemble_trading_result(
+            cash=cash,
+            inventory=inventory,
+            mid_price=mid_price,
+            fill_sizes=fill_sizes,
+            fill_rate=n_fills / n_quotes if n_quotes else 0.0,
+            n_fills=n_fills,
+        )

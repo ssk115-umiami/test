@@ -51,7 +51,13 @@ class SyntheticMicrostructureAdapter:
         return load_cached(self.fetch(spec))
 
     def validate(self, df: pd.DataFrame, spec=None) -> DataQualityReport:
-        return build_quality_report(df, timestamp_column="timestamp", expected_frequency=pd.Timedelta(seconds=1))
+        return build_quality_report(
+            df,
+            timestamp_column="timestamp",
+            expected_frequency=pd.Timedelta(seconds=1),
+            source_kind="synthetic",
+            verified=False,
+        )
 
     def _generate(self) -> pd.DataFrame:
         rng = np.random.default_rng(self.seed)

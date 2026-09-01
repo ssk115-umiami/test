@@ -38,3 +38,4 @@ def register() -> None:
     registry.register_feature_builder(Archetype.PREDICTIVE_MARKET_MAKING, MicrostructureFeatureBuilder)
     registry.register_strategy(Archetype.PREDICTIVE_MARKET_MAKING, MarketMakingStrategy)
     registry.register_target_builder(Archetype.PREDICTIVE_MARKET_MAKING, _target_builder)
+    registry.register_task_type(Archetype.PREDICTIVE_MARKET_MAKING, "classification")

@@ -88,6 +88,7 @@ _DATA_ADAPTERS: dict[Archetype, type] = {}
 _FEATURE_BUILDERS: dict[Archetype, type] = {}
 _STRATEGIES: dict[Archetype, type] = {}
 _TARGET_BUILDERS: dict[Archetype, Callable[[pd.DataFrame], pd.Series]] = {}
+_TASK_TYPES: dict[Archetype, str] = {}
 
 
 _SYNTHETIC_DATA_ADAPTERS: dict[Archetype, type] = {}
@@ -112,6 +113,17 @@ def register_feature_builder(archetype: Archetype, builder_cls: type) -> None:
 
 def register_strategy(archetype: Archetype, strategy_cls: type) -> None:
     _STRATEGIES[archetype] = strategy_cls
+
+
+def register_task_type(archetype: Archetype, task_type: str) -> None:
+    """'regression' or 'classification' — which kind of target this
+    archetype predicts (spread value vs. direction). Resolved by
+    orchestrator.run_stage() the same way as every other per-archetype
+    dependency: caller override first, then this registry, never a
+    hardcoded default baked into the orchestrator itself."""
+    if task_type not in {"regression", "classification"}:
+        raise ValueError(f"task_type must be 'regression' or 'classification', got {task_type!r}")
+    _TASK_TYPES[archetype] = task_type
 
 
 def register_target_builder(archetype: Archetype, target_builder) -> None:
@@ -152,3 +164,9 @@ def get_target_builder(archetype: Archetype) -> Callable[[pd.DataFrame], pd.Seri
             f"{archetype.value} has no target builder registered yet."
         )
     return _TARGET_BUILDERS[archetype]
+
+
+def get_task_type(archetype: Archetype) -> str:
+    if archetype not in _TASK_TYPES:
+        raise ArchetypeNotImplementedError(f"{archetype.value} has no task_type registered yet.")
+    return _TASK_TYPES[archetype]

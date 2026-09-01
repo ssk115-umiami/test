@@ -266,7 +266,13 @@ def report_cmd(spec: Path = typer.Option(..., exists=True, readable=True)) -> No
         raise typer.Exit(code=1)
     from project_factory.reporting.memo import build_reports  # deferred import
 
-    build_reports(project_spec)
+    result = build_reports(project_spec)
+    banner = result.get("verification_banner")
+    if banner:
+        typer.echo(banner)
+    typer.echo(f"wrote table: {result['table']}")
+    for fig in result["figures"]:
+        typer.echo(f"wrote figure: {fig}")
 
 
 if __name__ == "__main__":

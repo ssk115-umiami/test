@@ -12,7 +12,8 @@ Given a job description (+ optional insider call notes), the factory:
    interview-mastery pack, resume bullets, data dictionary, code layout),
 5. runs the actual research: walk-forward validated models, a trading/
    decision layer, robustness stress tests, and failure analysis —
-   working end-to-end for `predictive_market_making` as of Milestone 3.
+   working end-to-end for `predictive_market_making` and `power_da_rt`
+   as of Milestone 4.
 
 Full design rationale lives in the original handoff spec; this repo is the
 implementation. See `IMPLEMENTATION_STATUS.md` for exactly what's built.
@@ -41,8 +42,8 @@ qpf init-project --spec projects/headlands/project_spec.yaml
 
 # 4+. Run research / trading / robustness stages, then generate the
 # recruiting pack. Only archetypes in IMPLEMENTED_ARCHETYPES have a
-# working pipeline (currently: predictive_market_making) — see
-# IMPLEMENTATION_STATUS.md.
+# working pipeline (currently: predictive_market_making, power_da_rt)
+# — see IMPLEMENTATION_STATUS.md.
 qpf run --spec projects/<id>/project_spec.yaml --all --resume
 qpf report --spec projects/<id>/project_spec.yaml
 
@@ -57,14 +58,21 @@ electronic-trading JD (routes to `predictive_market_making`) and a
 CCI-style power/energy JD (routes to `power_da_rt`) — these are the two
 archetypes implemented first (Milestones 3 and 4) because together they
 exercise the full reusable stack: data adapter, feature timing, walk-forward
-validation, a trading/decision layer, and failure analysis. The real data
-adapter for `predictive_market_making` (Bybit's public trades/order-book
-archive) has not been network-verified from the sandbox this was built
-in — see the verification-status note in
-`project_factory/data/adapters/bybit_l2.py` and
-`IMPLEMENTATION_STATUS.md` before trusting it; `qpf run --synthetic`
+validation, a trading/decision layer, and failure analysis. Neither real
+data adapter (`BybitPublicDataAdapter`, `NyisoPowerDataAdapter`) has been
+network-verified from the sandbox this was built in — see the
+verification-status note at the top of each adapter's module and
+`IMPLEMENTATION_STATUS.md` before trusting either; `qpf run --synthetic`
 exercises the identical pipeline against generated data with a known
-injected signal in the meantime.
+injected signal in the meantime, and is never itself evidence of
+anything about the real markets.
+
+Every real adapter also supports **local-file ingestion**: download data
+yourself (the source's own bulk-download tool, or by hand) and drop it,
+unmodified, into `<cache_dir>/raw/...` using the source's own filenames
+— `fetch()`/`load()` use it automatically with zero network calls and
+zero code changes. See the companion verification guide for exact paths
+and commands per adapter.
 
 ## Architecture
 

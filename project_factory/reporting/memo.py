@@ -88,6 +88,36 @@ def _append_results_section(path: Path, heading: str, body: str) -> None:
     path.write_text(existing.rstrip() + "\n" + marker + body + "\n")
 
 
+def _verification_banner(data_quality: dict | None) -> str:
+    """Gate 9: never let synthetic or unverified data pass as research
+    evidence. Returns a non-empty warning string to prepend to every
+    generated results section (and print from the CLI) when the data
+    isn't both real and confirmed-working in this environment;
+    empty string when it's genuinely clean."""
+    if not data_quality:
+        return (
+            "> **DATA PROVENANCE UNKNOWN** — no `data_quality.json` found (the 'data' "
+            "stage may not have run). Do not treat anything below as evidence."
+        )
+    source_kind = data_quality.get("source_kind", "unknown")
+    verified = data_quality.get("verified", False)
+    if source_kind == "synthetic":
+        return (
+            "> **SYNTHETIC DATA — NOT REAL RESULTS.** Everything below was produced from "
+            "generated, non-real data (`data_quality.json`: `source_kind=synthetic`). This "
+            "is for pipeline testing only (`qpf run --synthetic`). Never cite these numbers "
+            "as research evidence, in a resume bullet, or in an interview."
+        )
+    if not verified:
+        return (
+            "> **UNVERIFIED DATA SOURCE.** `source_kind=real` but `verified=false` in "
+            "`data_quality.json` — no successful real fetch+load has been recorded from "
+            "this environment (see `project_factory/data/verification.py`). Confirm "
+            "verification before trusting anything below as research evidence."
+        )
+    return ""
+
+
 def build_reports(spec: ProjectSpec, project_dir: Path | None = None) -> dict:
     project_dir = project_dir or (PROJECTS_ROOT / spec.project.project_id)
     reports_dir = project_dir / "reports"
@@ -99,6 +129,8 @@ def build_reports(spec: ProjectSpec, project_dir: Path | None = None) -> dict:
     experiments_by_model = _load_all_experiments(reports_dir)
     trading = _load_json(reports_dir / "trading_results.json")
     robustness = _load_json(reports_dir / "robustness_results.json")
+    data_quality = _load_json(reports_dir / "data_quality.json")
+    banner = _verification_banner(data_quality)
 
     if not experiments_by_model:
         raise FileNotFoundError(
@@ -129,7 +161,11 @@ def build_reports(spec: ProjectSpec, project_dir: Path | None = None) -> dict:
         )
         figure_paths.append(path)
 
-    memo_body = ["```", table.to_string(index=False), "```", ""]
+    memo_body = []
+    if banner:
+        memo_body.append(banner)
+        memo_body.append("")
+    memo_body += ["```", table.to_string(index=False), "```", ""]
     if trading:
         memo_body.append(
             f"Trading layer (held-out test split): total_pnl={trading['total_pnl']:.4f}, "
@@ -152,9 +188,11 @@ def build_reports(spec: ProjectSpec, project_dir: Path | None = None) -> dict:
     readme_body = table.to_string(index=False)
     if trading:
         readme_body += f"\n\nHeld-out total PnL: {trading['total_pnl']:.4f} (sharpe {trading['sharpe']:.4f})."
-    _append_results_section(project_dir / "README.md", "Results", f"```\n{readme_body}\n```")
+    readme_section = (banner + "\n\n" if banner else "") + f"```\n{readme_body}\n```"
+    _append_results_section(project_dir / "README.md", "Results", readme_section)
 
     return {
         "table": str(table_path),
         "figures": [str(p) for p in figure_paths],
+        "verification_banner": banner,
     }

@@ -9,6 +9,7 @@ Add a new archetype's `register()` call here as it's implemented.
 
 from __future__ import annotations
 
-from project_factory.archetypes import predictive_market_making
+from project_factory.archetypes import power_da_rt, predictive_market_making
 
 predictive_market_making.register()
+power_da_rt.register()

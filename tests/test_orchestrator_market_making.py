@@ -41,6 +41,7 @@ def pipeline_kwargs(tmp_path):
         strategy=MarketMakingStrategy(alpha=1.0, gamma=0.05, fee_bps=1.0),
         validator=WalkForwardValidator(n_train=400, n_test=200),
         project_dir=tmp_path / "project",
+        task_type="classification",
     )
 
 

@@ -37,3 +37,30 @@ def cached_fetch(
 
 def load_cached(path: Path) -> pd.DataFrame:
     return pd.read_parquet(path)
+
+
+def fetch_bytes_with_local_fallback(
+    raw_dir: Path,
+    filename: str,
+    fetch_fn: Callable[[], bytes],
+) -> Path:
+    """Local-file/fixture ingestion path for real adapters.
+
+    `filename` should be the data source's OWN native filename (e.g.
+    Bybit's "BTCUSDT_2024-06-01.csv.gz", NYISO's
+    "20240601damlbmp_zone.csv") — not a hash. That means a user who
+    downloads the file directly from the source (its own bulk-download
+    tool, or by hand from the exchange/ISO's website) and drops it into
+    `raw_dir` with its original, unmodified name is picked up
+    automatically: `path.exists()` short-circuits before `fetch_fn` (the
+    network call) ever runs. No research code changes, no renaming.
+
+    This is the single mechanism behind both "cache a network fetch" and
+    "manually supply real data downloaded outside this sandbox" — they're
+    the same operation from the adapter's point of view.
+    """
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    path = raw_dir / filename
+    if not path.exists():
+        path.write_bytes(fetch_fn())
+    return path

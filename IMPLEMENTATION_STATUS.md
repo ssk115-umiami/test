@@ -241,45 +241,191 @@ Milestone 4 (NYISO/EIA/weather) will hit the identical constraint.
 - No small-neural-network step (ladder step 5) — per section 3.4, not
   added without a role-specific justification.
 
-## Currently building / not yet started
+## Cross-cutting infrastructure added alongside Milestone 4
 
-**Milestone 4 — Archetype A end-to-end (NYISO power DA/RT)** (not started)
+Requested explicitly (not archetype-specific) — built once, used by both
+Bybit and NYISO adapters:
 
-- NYISO OASIS data adapter (DA/RT LBMP, load forecasts) + weather data
-  source (needs a documented, current API — verify before committing
-  significant time, per section 21).
-- Power feature builder (lagged spread, load forecast error, temperature
-  deviation, congestion flags — all `available_at`-audited).
-- Reuse the Milestone 2 validation/diagnostics/reporting stack unchanged;
-  this is the test of whether the architecture actually generalizes.
+- `data/errors.py` — a shared exception taxonomy every real adapter uses
+  instead of letting a raw httpx/parsing exception escape:
+  `DataSourceNetworkError` (couldn't reach the host at all),
+  `DataSourceHTTPError` (reached it, non-2xx response),
+  `DataSourceSchemaError` (response received, structure didn't match
+  what's expected), `DataSourceQualityError` (parsed fine, failed a
+  quality check). This is what makes network vs. schema vs. quality
+  failures distinguishable at a glance instead of reading a stack trace
+  (requested deliverable #4 below).
+- `data/cache.py` — new `fetch_bytes_with_local_fallback(raw_dir,
+  filename, fetch_fn)`. `filename` is the source's OWN native filename
+  (Bybit's `BTCUSDT_2024-06-01.csv.gz`, NYISO's
+  `20240601damlbmp_zone.csv`) rather than a hash, so a file you download
+  yourself (browser, curl, the source's own bulk tools) and drop into
+  the adapter's raw directory with its original name is picked up
+  automatically — `path.exists()` short-circuits before any network
+  call. Both `BybitPublicDataAdapter` and `NyisoPowerDataAdapter` use
+  this exclusively; no separate "fixture mode" to keep in sync.
+- `data/verification.py` — `mark_verified`/`verification_status`,
+  persisted as `.verified.json` in each adapter's cache dir. A real
+  adapter's `load()` calls `mark_verified` ONLY after it actually
+  succeeds against real downloaded/local data (both Bybit and NYISO
+  adapters do this); `validate()` reports `verified` in the
+  `DataQualityReport`. Never true for synthetic data, never true for a
+  real adapter just because its code looks well-documented.
+- `data/quality.py` — `DataQualityReport` gained `source_kind`
+  (`"real"`/`"synthetic"`/`"unknown"`) and `verified: bool`, both set by
+  every adapter's `validate()`.
+- `orchestrator.py` — the `data` stage now persists
+  `reports/data_quality.json` (previously only `trading`/`robustness`
+  results were persisted).
+- `reporting/memo.py` + `qpf report` — read `data_quality.json` and
+  prepend a loud banner ("SYNTHETIC DATA — NOT REAL RESULTS" or
+  "UNVERIFIED DATA SOURCE") to every generated results section AND print
+  it to the terminal, whenever `source_kind == "synthetic"` or
+  `verified == False`. This is the enforcement mechanism behind "synthetic
+  data must never be presented as research evidence" — not just a
+  docstring promise.
+- `trading/pnl.py` — refactored into a shared `_standard_result()` plus
+  two thin assemblers: `assemble_trading_result` (mark-to-market,
+  continuously-held inventory — market making) and
+  `assemble_periodic_trading_result` (periodic settlement, a fresh
+  position each period against that period's realized outcome — power).
+  Both produce the identical dict shape, which is what lets
+  `reporting/memo.py` stay archetype-agnostic. See "architecture changes"
+  below for why they're not the same function.
+
+**Milestone 4 — Archetype A end-to-end (NYISO power DA/RT)**
+
+### Data-source verification note (same sandbox constraint as Milestone 3)
+
+`data/adapters/nyiso.py` is unusually well cross-confirmed for something
+that couldn't be hit directly in this sandbox: a web search independently
+reported the URL pattern, AND `gridstatus`
+(github.com/kmax12/gridstatus — a maintained open-source library other
+people run against live NYISO data) was fetched directly via
+`raw.githubusercontent.com` (reachable here) and its `nyiso.py` source
+read line by line, independently confirming dataset names, exact URL
+construction, the daily-vs-monthly-zip retention split, and raw CSV
+column names. Full detail, including what's still NOT confirmed (exact
+zone-name string formatting, whether the ~7-day retention window is
+current), is in the module's own docstring. Per Gate 9, still not
+treated as verified — `verification_status(...).verified` is `False`
+until a real `load()` succeeds in an unrestricted environment.
+
+### Completed
+
+- `data/adapters/synthetic_power.py` — `SyntheticPowerDataAdapter`:
+  hourly DA/RT LBMP + load forecast with a genuine injected regime
+  signal (contiguous "scarcity" blocks where an unexplained shock
+  dominates the spread) — directly encodes the archetype's own research
+  question (does predictability break down in certain regimes?) rather
+  than being uniformly learnable everywhere. Same output schema as the
+  real adapter.
+- `data/adapters/nyiso.py` — `NyisoPowerDataAdapter`: real adapter for
+  NYISO's public MIS CSV archive (day-ahead LBMP, real-time LBMP, load
+  forecast), with the daily-CSV/monthly-zip fallback `gridstatus` uses,
+  local-file ingestion, `check_connectivity()`, and the shared error
+  taxonomy. Parsing functions (`_parse_lbmp_csv`,
+  `_parse_load_forecast_csv`) are unit-tested against fixtures in the
+  documented format directly.
+- `features/power.py` — `PowerFeatureBuilder` (calendar features, lagged
+  spread, rolling spread mean/std, DA price, load forecast — all
+  `available_at`-audited) + `build_target` (same-row `da_rt_spread`,
+  legitimate because it's realized strictly after `decision_time`, no
+  shift needed — contrast with the market-making archetype's
+  forward-shifted label).
+- `trading/no_trade_sizing.py` — `NoTradeSizingStrategy`: a no-trade band
+  plus capped, scaled position sizing (section 6's "uncertainty ->
+  no-trade / sizing rule"), reusing `trading/costs.py` and the new
+  `assemble_periodic_trading_result`.
+- `project_factory/archetypes/power_da_rt.py` — registers the real
+  adapter, synthetic adapter, feature builder, strategy, target builder,
+  and (new) `task_type="regression"` with the registry.
+- Tests: `test_synthetic_power.py`, `test_power_features.py`,
+  `test_no_trade_sizing.py`, `test_nyiso_adapter_parsing.py`,
+  `test_orchestrator_power.py`, plus the new
+  `test_local_ingestion.py` covering both adapters — **106/106 tests
+  passing overall** (73 from Milestones 1-3 + 33 new), ruff clean.
+  Verified: the leakage audit passes on the power feature builder's own
+  output; scarcity-regime rows have >2x the average spread magnitude of
+  normal rows (the injected regime signal is real); higher fees never
+  improve PnL for the sizing strategy either; a network-free test proves
+  both real adapters use manually-dropped local files with **zero**
+  network calls (`monkeypatch` raises `AssertionError` if `httpx.get`/
+  `httpx.head` is ever called) and correctly call `mark_verified`;
+  `test_orchestrator_power.py::test_same_orchestrator_code_serves_both_archetypes_without_branching`
+  asserts `orchestrator.py`'s source contains no archetype-name
+  conditionals; full `data -> models -> trading -> robustness` pipeline
+  verified through the real CLI (`qpf run --all --synthetic` then `qpf
+  report`) exactly as Milestone 3 was, including the verification banner
+  actually appearing in the terminal and in `README.md`/`RESEARCH_MEMO.md`.
+
+### Architecture changes Milestone 4 forced (the actual generalization findings)
+
+Three real bugs/gaps in the "generic" orchestrator built during Milestone
+3, all found by `test_orchestrator_power.py` failing before these fixes
+— i.e., the Milestone 3 code LOOKED archetype-agnostic but wasn't fully:
+
+1. **`_run_robustness_suite` hardcoded `MarketMakingStrategy(...)`
+   directly** with a fixed parameter list (`alpha`, `gamma`,
+   `half_spread_ticks`, ...) that doesn't exist on
+   `NoTradeSizingStrategy`. Fixed by reconstructing `type(strategy)`
+   with parameters introspected from the actual instance (`vars(strategy)`)
+   and only sweeping `fee_bps`/`latency_ticks` when the strategy instance
+   actually has that attribute — `latency_sensitivity` is correctly
+   *absent* from the power archetype's robustness output rather than
+   forced into an economically meaningless concept for a strategy with
+   no notion of quote staleness.
+2. **`task_type` defaulted to `"classification"`** in `run_stage()`'s
+   signature — silently wrong for a regression archetype. Fixed by
+   adding `registry.register_task_type`/`get_task_type` (same
+   override-then-registry pattern as every other per-archetype
+   dependency) and changing the default to `None`, resolved per-call.
+3. **A hardcoded `"logistic_regression"` fallback** (used when a spec's
+   model-ladder name doesn't resolve) would have crashed
+   `build_model(name, task_type="regression")`. Replaced with
+   `_default_model_name(task_type)`.
+4. (Not a bug fix, a genuine design split, documented above) —
+   `trading/pnl.py`'s equity assembly needed two mechanics
+   (`assemble_trading_result` vs. `assemble_periodic_trading_result`)
+   because mark-to-market inventory (continuously held, priced against a
+   market) and periodic signal-based positions (a fresh bet each period
+   against that period's own realized outcome, no meaningful
+   between-period "price" to mark against) are genuinely different
+   market structures — forcing them into one function would have meant
+   either a wrong PnL calculation for one archetype or a leaky
+   abstraction with archetype-conditional branches inside it. The
+   *shape* of the result (the dict keys) is still fully shared, which is
+   what actually matters for `reporting/memo.py`.
+
+Everything else — the walk-forward validator, the leakage auditor, the
+model factory (`ridge`/`ols`/`gradient_boosted_tree` already covered
+power's model ladder with zero changes), the experiment recorder, the
+data-quality/verification machinery, the CLI, the reporter's figures/
+table generation — worked for `power_da_rt` completely unchanged.
 
 ## Blockers
 
-- Milestones 1-3 complete and tested (73/73). The one open item from
-  Milestone 3 is verifying `BybitPublicDataAdapter` against live data —
-  needs an environment with normal internet access (this sandbox blocks
-  it; see Milestone 3's constraint note above).
-- Milestone 4's NYISO/EIA/weather data access will hit the identical
-  sandbox network block — plan to research URLs/formats via `WebSearch`
-  (as Milestone 3 did) and build both a real adapter (flagged unverified)
-  and a synthetic one, then verify the real one outside the sandbox.
+- Milestones 1-4 complete and tested (106/106). Two open items, both
+  needing an environment with normal internet access (this sandbox
+  blocks them):
+  1. Verify `BybitPublicDataAdapter` against live Bybit data.
+  2. Verify `NyisoPowerDataAdapter` against live NYISO data.
+- See the companion verification guide (delivered alongside this update)
+  for exact commands, expected schemas, and how to read each adapter's
+  failure modes.
 
 ## Next command to run
 
 ```bash
 source .venv/bin/activate
-pytest tests/ -v   # confirm Milestones 1-3 still green (73/73) before starting Milestone 4
+pytest tests/ -v   # confirm Milestones 1-4 still green (106/106) before touching real data
 ```
 
-Then, outside this sandbox (normal internet access): run
-`qpf run --spec <a predictive_market_making project_spec.yaml> --stage data`
-(no `--synthetic`) to verify/fix `BybitPublicDataAdapter` against live
-data — start with `adapter.check_connectivity()`, expect to need to
-correct the order-book archive's exact directory path.
-
-Then start Milestone 4: research-verify NYISO OASIS + a weather source
-(section 21), write `data/adapters/nyiso.py` + a matching synthetic
-adapter, `features/power.py`, and register them in
-`project_factory/archetypes/power_da_rt.py` — reusing the Milestone 2
-validation/experiments core and Milestone 3's orchestrator/reporter
-unchanged is the actual test of whether this architecture generalizes.
+Then, outside this sandbox: run the two real-data verification
+sequences (Bybit, then NYISO) from the companion guide. Once both show
+`verified: true`, the natural next steps are the packaging / interview-
+mastery pass (section 13, hours 36-48) and, if desired, extending either
+archetype (Bybit delta-record book reconstruction; NYISO comparison-zone
+spread features; a weather data source for the power archetype) — but
+per instruction, this session stops here until the real-data paths are
+validated.

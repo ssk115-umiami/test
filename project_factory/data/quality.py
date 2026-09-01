@@ -24,6 +24,17 @@ class DataQualityReport(BaseModel):
     gaps_detected: bool = False
     notes: list[str] = Field(default_factory=list)
 
+    source_kind: str = "unknown"
+    """'real', 'synthetic', or 'unknown'. Set by the adapter that built
+    this report. Gate 9: reporting must never present synthetic data as
+    research evidence, and this is the field that lets it check."""
+    verified: bool = False
+    """True only after a real adapter's fetch+load has actually
+    succeeded and produced a schema-conformant frame in THIS environment
+    (see data/verification.py) — never true for synthetic data, and
+    false by default for a real adapter until that has actually
+    happened, regardless of how well-documented its source is."""
+
     @property
     def is_clean(self) -> bool:
         return (
@@ -37,6 +48,8 @@ def build_quality_report(
     df: pd.DataFrame,
     timestamp_column: str,
     expected_frequency: pd.Timedelta | None = None,
+    source_kind: str = "unknown",
+    verified: bool = False,
 ) -> DataQualityReport:
     if timestamp_column not in df.columns:
         raise ValueError(f"timestamp_column {timestamp_column!r} not in dataframe columns")
@@ -76,4 +89,6 @@ def build_quality_report(
         max_timestamp=str(ts.max()) if len(ts) else None,
         gaps_detected=gaps_detected,
         notes=notes,
+        source_kind=source_kind,
+        verified=verified,
     )
