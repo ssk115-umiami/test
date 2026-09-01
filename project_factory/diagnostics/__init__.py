@@ -1,6 +1,7 @@
-"""Failure analysis (section 11.6, section 3.6). Milestone 3 — not yet
-implemented.
+"""Failure analysis (section 11.6, section 3.6).
 
-Will hold: residuals.py, regime.py, stability.py, feature_ablation.py,
-failure_cases.py — the FailureAnalyzer used by every archetype.
+FailureAnalyzer (failure_cases.py): largest_errors, largest_drawdowns,
+regime_breakdown, parameter_stability, feature_ablation — kept as one
+class rather than the section-9 sketch's five separate files (see that
+module's docstring for why).
 """

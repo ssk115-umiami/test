@@ -12,7 +12,9 @@ diagnostics and reporting stack underneath is shared (section 9).
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Callable
 
+import pandas as pd
 import yaml
 from pydantic import BaseModel, Field
 
@@ -85,11 +87,23 @@ registered via register_data_adapter etc. Empty until Milestone 3 lands."""
 _DATA_ADAPTERS: dict[Archetype, type] = {}
 _FEATURE_BUILDERS: dict[Archetype, type] = {}
 _STRATEGIES: dict[Archetype, type] = {}
+_TARGET_BUILDERS: dict[Archetype, Callable[[pd.DataFrame], pd.Series]] = {}
+
+
+_SYNTHETIC_DATA_ADAPTERS: dict[Archetype, type] = {}
 
 
 def register_data_adapter(archetype: Archetype, adapter_cls: type) -> None:
     _DATA_ADAPTERS[archetype] = adapter_cls
     IMPLEMENTED_ARCHETYPES.add(archetype)
+
+
+def register_synthetic_data_adapter(archetype: Archetype, adapter_cls: type) -> None:
+    """A non-real, same-schema stand-in adapter (see data/adapters/
+    synthetic_*.py) — lets `qpf run --synthetic` exercise the full
+    pipeline without live data access. Never used unless explicitly
+    requested."""
+    _SYNTHETIC_DATA_ADAPTERS[archetype] = adapter_cls
 
 
 def register_feature_builder(archetype: Archetype, builder_cls: type) -> None:
@@ -100,12 +114,20 @@ def register_strategy(archetype: Archetype, strategy_cls: type) -> None:
     _STRATEGIES[archetype] = strategy_cls
 
 
-def get_data_adapter(archetype: Archetype):
-    if archetype not in _DATA_ADAPTERS:
-        raise ArchetypeNotImplementedError(
-            f"{archetype.value} has no data adapter registered yet."
-        )
-    return _DATA_ADAPTERS[archetype]()
+def register_target_builder(archetype: Archetype, target_builder) -> None:
+    """target_builder: Callable[[pd.DataFrame], pd.Series] — builds the
+    (forward-looking) label column from a feature frame. Archetype-
+    specific because what counts as the target (a spread, a direction, a
+    return) differs per project."""
+    _TARGET_BUILDERS[archetype] = target_builder
+
+
+def get_data_adapter(archetype: Archetype, synthetic: bool = False):
+    table = _SYNTHETIC_DATA_ADAPTERS if synthetic else _DATA_ADAPTERS
+    if archetype not in table:
+        kind = "synthetic data adapter" if synthetic else "data adapter"
+        raise ArchetypeNotImplementedError(f"{archetype.value} has no {kind} registered yet.")
+    return table[archetype]()
 
 
 def get_feature_builder(archetype: Archetype):
@@ -122,3 +144,11 @@ def get_strategy(archetype: Archetype):
             f"{archetype.value} has no strategy registered yet."
         )
     return _STRATEGIES[archetype]()
+
+
+def get_target_builder(archetype: Archetype) -> Callable[[pd.DataFrame], pd.Series]:
+    if archetype not in _TARGET_BUILDERS:
+        raise ArchetypeNotImplementedError(
+            f"{archetype.value} has no target builder registered yet."
+        )
+    return _TARGET_BUILDERS[archetype]

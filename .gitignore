@@ -16,4 +16,7 @@ projects/*/data/processed/*
 !projects/*/data/interim/.gitkeep
 !projects/*/data/processed/.gitkeep
 
+# Raw fetch cache used by data adapters (data/cache.py) — regenerated, not committed
+/data_cache/
+
 .DS_Store

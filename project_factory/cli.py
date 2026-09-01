@@ -15,6 +15,7 @@ from pathlib import Path
 import typer
 import yaml
 
+import project_factory.archetypes  # noqa: F401  (registers implemented archetypes)
 from project_factory.init_project import initialize_project
 from project_factory.jd_parser import parse_role
 from project_factory.registry import IMPLEMENTED_ARCHETYPES
@@ -203,6 +204,15 @@ def run_cmd(
     stage: str | None = typer.Option(None, help="One of: data, models, trading, robustness."),
     all_stages: bool = typer.Option(False, "--all", help="Run every stage in order."),
     resume: bool = typer.Option(False, help="Skip stages already cached from a prior run."),
+    synthetic: bool = typer.Option(
+        False,
+        "--synthetic",
+        help=(
+            "Use the archetype's synthetic (non-real) data adapter instead of the "
+            "registered production one — exercises the full pipeline without live "
+            "data access. Never use this to report results as real."
+        ),
+    ),
 ) -> None:
     """Run the research orchestrator for a spec. Only archetypes in
     IMPLEMENTED_ARCHETYPES have a working pipeline behind this command;
@@ -215,9 +225,31 @@ def run_cmd(
             f"See IMPLEMENTATION_STATUS.md for what's built so far."
         )
         raise typer.Exit(code=1)
+    from project_factory import registry
     from project_factory.orchestrator import run_stage  # deferred import: only needed once implemented
 
-    run_stage(project_spec, stage=stage, all_stages=all_stages, resume=resume)
+    if not synthetic and (all_stages or stage == "data"):
+        adapter = registry.get_data_adapter(archetype)
+        check = getattr(adapter, "check_connectivity", None)
+        if callable(check):
+            try:
+                check()
+            except Exception as exc:  # noqa: BLE001 - top-level CLI error boundary
+                typer.echo(f"data source connectivity check failed: {exc}")
+                raise typer.Exit(code=1) from exc
+    elif synthetic:
+        typer.echo("--synthetic: using non-real data. Do not report these results as real.")
+
+    try:
+        results = run_stage(
+            project_spec, stage=stage, all_stages=all_stages, resume=resume, synthetic=synthetic
+        )
+    except Exception as exc:  # noqa: BLE001 - top-level CLI error boundary
+        typer.echo(f"stage {stage or 'all'!r} failed: {exc}")
+        raise typer.Exit(code=1) from exc
+
+    for key in results:
+        typer.echo(f"completed stage output: {key}")
 
 
 @app.command("report")

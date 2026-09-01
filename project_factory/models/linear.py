@@ -107,7 +107,12 @@ class LogisticModel:
     def __init__(self, C: float = 1.0, penalty: str = "l2"):
         self.C = C
         self.penalty = penalty
-        self._model = LogisticRegression(C=C, penalty=penalty, max_iter=1000)
+        # sklearn >=1.8 deprecates the `penalty` kwarg entirely (warns on
+        # any explicit value, including its own default); only pass it
+        # through for a non-default choice so the common case stays warning-free
+        # on both old and new sklearn versions.
+        kwargs = {} if penalty == "l2" else {"penalty": penalty}
+        self._model = LogisticRegression(C=C, max_iter=1000, **kwargs)
         self._feature_names: list[str] = []
 
     def fit(self, X: pd.DataFrame, y: pd.Series) -> "LogisticModel":

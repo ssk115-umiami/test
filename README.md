@@ -10,8 +10,9 @@ Given a job description (+ optional insider call notes), the factory:
 3. generates a structured `project_spec.yaml`,
 4. scaffolds a self-contained project folder (README, research memo,
    interview-mastery pack, resume bullets, data dictionary, code layout),
-5. (Milestone 2+) runs the actual research: walk-forward validated models,
-   a trading/decision layer, robustness stress tests, and failure analysis.
+5. runs the actual research: walk-forward validated models, a trading/
+   decision layer, robustness stress tests, and failure analysis —
+   working end-to-end for `predictive_market_making` as of Milestone 3.
 
 Full design rationale lives in the original handoff spec; this repo is the
 implementation. See `IMPLEMENTATION_STATUS.md` for exactly what's built.
@@ -39,8 +40,15 @@ qpf show-spec projects/headlands/project_spec.yaml
 qpf init-project --spec projects/headlands/project_spec.yaml
 
 # 4+. Run research / trading / robustness stages, then generate the
-# recruiting pack (Milestone 2/3 — implemented per-archetype as they land)
+# recruiting pack. Only archetypes in IMPLEMENTED_ARCHETYPES have a
+# working pipeline (currently: predictive_market_making) — see
+# IMPLEMENTATION_STATUS.md.
 qpf run --spec projects/<id>/project_spec.yaml --all --resume
+qpf report --spec projects/<id>/project_spec.yaml
+
+# Try the whole pipeline right now without any data access, using the
+# synthetic (non-real, clearly-labeled) data adapter:
+qpf run --spec projects/<id>/project_spec.yaml --all --synthetic
 qpf report --spec projects/<id>/project_spec.yaml
 ```
 
@@ -49,7 +57,14 @@ electronic-trading JD (routes to `predictive_market_making`) and a
 CCI-style power/energy JD (routes to `power_da_rt`) — these are the two
 archetypes implemented first (Milestones 3 and 4) because together they
 exercise the full reusable stack: data adapter, feature timing, walk-forward
-validation, a trading/decision layer, and failure analysis.
+validation, a trading/decision layer, and failure analysis. The real data
+adapter for `predictive_market_making` (Bybit's public trades/order-book
+archive) has not been network-verified from the sandbox this was built
+in — see the verification-status note in
+`project_factory/data/adapters/bybit_l2.py` and
+`IMPLEMENTATION_STATUS.md` before trusting it; `qpf run --synthetic`
+exercises the identical pipeline against generated data with a known
+injected signal in the meantime.
 
 ## Architecture
 
@@ -59,11 +74,14 @@ project_factory/
 ├── jd_parser.py      # deterministic keyword/heuristic signal scoring
 ├── router.py          # section-7 rules -> primary/secondary archetype
 ├── spec_builder.py    # RoleAnalysis + RoutingResult -> ProjectSpec
-├── registry.py         # archetype config loader + data/feature/strategy registry
+├── registry.py         # archetype config loader + data/feature/strategy/target registry
 ├── init_project.py      # scaffolds projects/<id>/ from a ProjectSpec
-├── cli.py                 # `qpf` commands
+├── orchestrator.py        # run_stage(): data -> models -> trading -> robustness
+├── experiments.py           # ExperimentRecord + walk-forward experiment runner
+├── cli.py                     # `qpf` commands
+├── archetypes/                 # per-archetype wiring (registers adapter/features/strategy/target)
 ├── data/, features/, models/, validation/, trading/, diagnostics/, reporting/
-│   # reusable research core — Milestone 2/3, see IMPLEMENTATION_STATUS.md
+│   # reusable research core, see IMPLEMENTATION_STATUS.md for exact coverage
 configs/
 ├── candidate.yaml         # global candidate context (section 4.3)
 └── archetypes/*.yaml      # per-archetype canonical project + defaults
