@@ -1,0 +1,33 @@
+Notes from call with a researcher at a Headlands-style systematic electronic
+trading firm:
+
+- The firm is research-led and trades almost entirely delta-one products:
+  futures, equities, bonds. Fully systematic — software makes every trade,
+  no human overrides on live strategies.
+- Market data (order book / trade data) feeds directly into time-series and
+  neural-network style research.
+- Even though a lot of code generation is now AI-assisted internally,
+  interviews are still very coding-heavy: expect LeetCode-style algorithm
+  questions and standard quant math (probability, stats).
+- Data-science-style interview round: you're handed a raw dataset and asked
+  how you'd clean it, split it (they will push back hard on random splits
+  for time series), model it, validate it, and reason about failure modes.
+- Linear algebra questions go deep — proof-style reasoning at the level of
+  a serious undergraduate course (Axler-style: rank, eigenvalues, SVD,
+  positive-definiteness), not just "compute this matrix product."
+- Day to day, researchers spend real time checking PnL, diagnosing why a
+  production strategy underperformed, running historical simulation
+  experiments, and modifying strategy/data/research pipeline code.
+- Good research ideas often come from deeply understanding an existing
+  codebase and production system, not from a blank-slate idea.
+- Recommended project direction if you want to be taken seriously: build
+  something using real historical market data plus a market-making or
+  short-horizon prediction model — not another generic Kaggle-style ML demo.
+- Projects get probed conversationally in interviews (they'll ask you to
+  defend design choices) rather than read line-by-line, so be ready to
+  explain every choice, not just recite results.
+- This person's opinion, not confirmed firm policy: they believe
+  research-generation work will increasingly be automated by LLM agents
+  over the next few years, so judgment/debugging may matter more than raw
+  coding speed over time. Treat this as one person's forecast, not a hiring
+  requirement.

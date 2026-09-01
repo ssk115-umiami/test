@@ -1,0 +1,101 @@
+archetype: power_da_rt
+name: "Power Regime / DA-RT Research"
+best_for:
+  - commodity quant
+  - power desks
+  - CCI / Mercuria-style commodity trading firms
+  - energy hedge funds
+  - power fundamental / quant roles
+
+canonical_title: >-
+  When the Grid Breaks the Model: Regime-Aware Forecasting and Trading of
+  NYISO Day-Ahead vs Real-Time Power Spreads
+
+canonical_research_question: >-
+  How predictable is the hourly NYISO DA-RT power-price spread under normal
+  conditions, how does predictability break down as the physical state of
+  the grid changes, and can model uncertainty improve trading decisions?
+
+economic_hypothesis: >-
+  Day-ahead and real-time power prices diverge predictably as a function of
+  forecast load/weather error, unit commitment, and congestion, but this
+  relationship is regime-dependent: it holds under normal grid conditions
+  and breaks down during scarcity, outages, and extreme weather.
+
+statistical_hypothesis: >-
+  A linear/regularized model can capture the stable component of the DA-RT
+  relationship, but residuals will show heteroskedasticity and regime
+  clustering that a single global model cannot capture; explicitly modeling
+  or flagging the regime should improve trading-relevant decisions even if
+  it does not improve raw point-forecast accuracy.
+
+data:
+  market_type: "power_grid_iso"
+  instrument: "NYISO NYC zone (J) vs one comparison zone"
+  frequency: "hourly"
+  sources:
+    - "NYISO OASIS (DA/RT LBMP, load forecasts)"
+    - "NOAA / ISO weather data or forecast vendor"
+    - "EIA natural gas spot/futures (fuel cost context, ex-ante only)"
+  required_fields:
+    - timestamp
+    - da_lbmp
+    - rt_lbmp
+    - load_forecast
+    - actual_load
+    - temperature_forecast
+  timestamp_policy: "strictly_ex_ante"
+
+features:
+  - lagged_da_rt_spread
+  - load_forecast_error_history
+  - temperature_forecast
+  - temperature_forecast_deviation_from_normal
+  - day_of_week_hour_of_day
+  - season
+  - gas_price_lagged
+  - congestion_flag_lagged
+
+models:
+  baseline:
+    - naive_zero_spread
+    - seasonal_naive
+  predictive:
+    - ols
+    - ridge
+    - gradient_boosted_tree
+
+trading:
+  alpha_to_quotes: false
+  inventory_penalty: false
+  fees: true
+  fill_uncertainty: false
+  latency_stress_test: false
+  adverse_selection_measurement: false
+
+robustness:
+  - multicollinearity_and_conditioning
+  - rolling_coefficient_stability
+  - residual_regime_analysis
+  - congestion_outage_scarcity_postmortem
+  - training_window_sensitivity
+  - no_trade_threshold_sensitivity
+
+project_covers:
+  - physical/fundamental market reasoning
+  - regularized linear modeling and multicollinearity diagnostics
+  - regime-dependent model failure analysis
+  - ex-ante feature timing discipline
+  - uncertainty-aware trading decisions (sizing / no-trade rule)
+
+project_does_not_cover:
+  - electronic market microstructure / order-book prediction
+  - low-latency execution
+  - options / volatility surface modeling
+  - equity cross-sectional research
+
+separate_interview_prep:
+  - probability
+  - mental_math
+  - market_specific_knowledge
+  - linear_algebra_proofs

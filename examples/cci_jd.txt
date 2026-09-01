@@ -1,0 +1,34 @@
+Castleton Commodities International — Quantitative Analyst, Power & Energy
+
+CCI is a global merchant energy company trading physical and financial power,
+natural gas, and other commodities. We are hiring a Quantitative Analyst to
+support our power and gas trading desks.
+
+Responsibilities:
+- Build statistical and fundamental models of power and natural gas prices,
+  including day-ahead/real-time price relationships, basis, and regional
+  spreads.
+- Work with traders to translate market and physical-grid intuition into
+  quantitative tools that support trading and risk decisions.
+- Analyze load, weather, generation, and outage data to understand drivers
+  of price dislocations.
+- Build and maintain data pipelines that combine ISO market data, weather
+  data, and fundamental supply/demand data.
+- Communicate model assumptions, limitations, and results clearly to
+  traders and risk managers.
+
+Qualifications:
+- Strong foundation in statistics and applied mathematics; comfort with
+  regression, regularization (ridge/lasso), and time-series methods.
+- Understanding of linear algebra sufficient to reason about conditioning,
+  multicollinearity, and model stability.
+- Proficiency in Python and SQL; comfortable working with large
+  dataframes.
+- Interest in physical commodity markets and willingness to develop deep
+  fundamental market knowledge (grid operations, pipeline flows, weather
+  drivers of demand).
+- Prior exposure to power or gas markets a plus but not required.
+
+Interview process: case study built around real market data, statistics
+and dataframe manipulation exercises, and a discussion of a candidate's
+prior quantitative project.

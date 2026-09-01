@@ -1,0 +1,19 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# Project run artifacts (data is regenerated, not committed)
+projects/*/data/raw/*
+projects/*/data/interim/*
+projects/*/data/processed/*
+!projects/*/data/raw/.gitkeep
+!projects/*/data/interim/.gitkeep
+!projects/*/data/processed/.gitkeep
+
+.DS_Store

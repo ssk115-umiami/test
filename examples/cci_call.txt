@@ -1,0 +1,32 @@
+Notes from a call with a recent-graduate trader on a cross-commodities desk
+at a CCI-style merchant energy trading firm:
+
+- Hiring is broad: apply widely, interviews lean on market-focused case
+  studies plus statistics and dataframe manipulation questions, with some
+  quant-style questions mixed in.
+- Interviewers also probe computer architecture / systems understanding,
+  not just language syntax — they want to know you understand how your
+  code actually runs, not just that it runs.
+- Overall emphasis is more on math and market reasoning than on rote
+  programming ability.
+- Energy commodities, especially power, are described as a major current
+  opportunity set for someone with quantitative skills.
+- Before choosing a statistical method, you're expected to reason about the
+  data-generating process and data frequency — e.g. why an hourly power
+  price series behaves differently from a daily equity series.
+- Traders increasingly expect junior quant hires to be able to explain why
+  a method works, not just apply it: e.g. why ridge regression helps with
+  collinearity, what regularization is doing to the optimization problem,
+  whether a model is statistically sound.
+- Expect some theoretical ML questions even in a desk-facing interview.
+- Experienced traders are increasingly leaning on quantitative tools as
+  markets get more complex; physical/causal intuition about the grid still
+  matters, but simple one-step causal rules (e.g. "cold weather -> higher
+  price") are less sufficient than they used to be — the interactions are
+  more complex now.
+- Anecdote: the interviewer's own boss once asked a theoretical modeling
+  question in an interview that mapped directly onto a live research
+  bottleneck the desk was dealing with; the candidate's theoretical answer
+  was later actually used to make progress on the real problem. The
+  candidate didn't know at the time it was a live issue — it just happened
+  to be the right kind of thinking.

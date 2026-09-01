@@ -1,0 +1,84 @@
+archetype: options_market_making
+name: "Options / Volatility Market Making"
+best_for:
+  - options traders
+  - volatility desks
+  - options market makers
+
+canonical_title: "Inventory-Aware Options Market Making Under a Fitted Volatility Surface"
+
+canonical_research_question: >-
+  How stable is a fitted implied-volatility surface out of sample, and how
+  much does hedging/inventory-aware quoting improve risk-adjusted PnL
+  relative to a naive delta-hedged strategy under changing volatility and
+  spread regimes?
+
+economic_hypothesis: >-
+  The implied-volatility surface encodes market expectations of future
+  realized volatility and skew/convexity risk premia; a market maker who
+  prices and hedges consistently with a well-fit surface should earn the
+  spread while controlling model and hedging risk.
+
+statistical_hypothesis: >-
+  Local/spline interpolation of the vol surface will fit better in-sample
+  than parametric models but may be less stable out of sample; hedging
+  error and PnL variance should be attributable to specific surface
+  instability episodes.
+
+data:
+  market_type: "listed_options"
+  instrument: null
+  frequency: "daily_or_intraday"
+  sources:
+    - "Exchange or vendor options chain data (quotes, greeks, underlying)"
+  required_fields:
+    - timestamp
+    - underlying_price
+    - strike
+    - expiry
+    - bid_iv
+    - ask_iv
+  timestamp_policy: "strictly_ex_ante"
+
+features:
+  - moneyness
+  - time_to_expiry
+  - realized_vol_trailing
+  - iv_rank
+  - skew_slope
+
+models:
+  baseline:
+    - black_scholes_static_vol
+  predictive:
+    - local_vol_surface_interpolation
+    - parametric_svi_fit
+
+trading:
+  alpha_to_quotes: true
+  inventory_penalty: true
+  fees: true
+  fill_uncertainty: true
+  latency_stress_test: false
+  adverse_selection_measurement: true
+
+robustness:
+  - vol_surface_stability
+  - hedging_error_decomposition
+  - spread_regime_sensitivity
+  - inventory_limit_sensitivity
+
+project_covers:
+  - options pricing and Greeks
+  - vol surface construction and stability diagnostics
+  - inventory-aware quoting and hedging simulation
+
+project_does_not_cover:
+  - order-book microstructure at tick level
+  - physical commodity fundamentals
+  - equity cross-sectional research
+
+separate_interview_prep:
+  - stochastic_calculus_basics
+  - probability
+  - linear_algebra_proofs

@@ -1,0 +1,24 @@
+degree: "MS Mathematical Finance"
+school_tier: "non-target"
+target_roles:
+  - quantitative_trading
+  - quantitative_research
+  - commodity_trading
+  - systematic_research
+  - hedge_fund_research
+languages:
+  - python
+  - cpp
+target_geography:
+  - New York City
+  - Greenwich CT
+  - Stamford CT
+  - Westchester
+strengths_to_signal:
+  - mathematics
+  - probability
+  - statistics
+  - model_reasoning
+  - market_intuition
+  - research_judgment
+project_time_budget_hours: 48

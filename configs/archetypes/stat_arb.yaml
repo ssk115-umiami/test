@@ -1,0 +1,84 @@
+archetype: stat_arb
+name: "Cross-Sectional / Stat-Arb Research"
+best_for:
+  - equity quant hedge funds
+  - systematic equity research
+  - statistical arbitrage desks
+
+canonical_title: "Cross-Sectional Return Prediction with Neutralized Factor Exposure"
+
+canonical_research_question: >-
+  Do cross-sectional features (value, momentum, quality, short-horizon
+  reversal) predict relative equity returns after neutralizing common risk
+  exposures, and does the signal survive realistic turnover/cost
+  constraints and crowding-style robustness checks?
+
+economic_hypothesis: >-
+  Cross-sectional differences in valuation, momentum, and short-term
+  reversal reflect slow information diffusion and liquidity-driven
+  mispricing that a neutralized, diversified portfolio can systematically
+  exploit.
+
+statistical_hypothesis: >-
+  Raw cross-sectional signals are confounded with sector/size/beta
+  exposure; neutralization is required before the signal's true predictive
+  power can be assessed, and temporal (not random) validation is required
+  given serial correlation in returns.
+
+data:
+  market_type: "equity_cross_section"
+  instrument: null
+  frequency: "daily"
+  sources:
+    - "Vendor or exchange equity price/fundamentals data for a liquid universe"
+  required_fields:
+    - timestamp
+    - ticker
+    - price
+    - sector
+    - fundamentals_snapshot
+  timestamp_policy: "strictly_ex_ante"
+
+features:
+  - value_composite
+  - momentum_12_1
+  - short_horizon_reversal
+  - size
+  - sector_exposure
+
+models:
+  baseline:
+    - equal_weight_universe
+  predictive:
+    - ols_cross_sectional
+    - ridge
+    - gradient_boosted_tree
+
+trading:
+  alpha_to_quotes: false
+  inventory_penalty: false
+  fees: true
+  fill_uncertainty: false
+  latency_stress_test: false
+  adverse_selection_measurement: false
+
+robustness:
+  - neutralization_sensitivity
+  - turnover_and_cost_sensitivity
+  - decay_analysis
+  - crowding_regime_robustness
+
+project_covers:
+  - universe construction and feature normalization
+  - factor neutralization
+  - temporal validation and turnover-aware portfolio evaluation
+
+project_does_not_cover:
+  - order-book microstructure
+  - physical commodity fundamentals
+  - options/volatility
+
+separate_interview_prep:
+  - linear_algebra_proofs
+  - probability
+  - portfolio_theory

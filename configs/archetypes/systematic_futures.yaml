@@ -1,0 +1,85 @@
+archetype: systematic_futures
+name: "Systematic Futures / Alpha Research"
+best_for:
+  - systematic macro
+  - futures quant
+  - CTAs
+  - multi-asset hedge funds
+  - multi-asset quantitative research
+
+canonical_title: "Cross-Sectional and Time-Series Signals in Liquid Futures"
+
+canonical_research_question: >-
+  Can term structure, carry, momentum, and macro features predict
+  risk-adjusted futures returns, and does the signal survive walk-forward
+  testing, realistic costs, regime shifts, and parameter perturbations?
+
+economic_hypothesis: >-
+  Term structure (carry), trend continuation, and macro conditions reflect
+  persistent risk premia and slow-moving capital/hedging flows that create
+  predictable, though modest, risk-adjusted return premia in liquid futures.
+
+statistical_hypothesis: >-
+  Time-series and cross-sectional versions of the same economic signal are
+  correlated but not identical in strength; regularization and walk-forward
+  validation are required to avoid overstating signal strength from
+  in-sample fitting on autocorrelated return series.
+
+data:
+  market_type: "liquid_futures_or_etf_proxies"
+  instrument: null
+  frequency: "daily"
+  sources:
+    - "Exchange or vendor futures settlement data"
+    - "ETF proxies where futures history is limited"
+  required_fields:
+    - timestamp
+    - instrument_id
+    - settlement_price
+    - term_structure_prices
+  timestamp_policy: "strictly_ex_ante"
+
+features:
+  - carry_slope
+  - trailing_momentum
+  - volatility_scaled_momentum
+  - realized_volatility
+  - macro_regime_indicator
+
+models:
+  baseline:
+    - naive_buy_and_hold
+  predictive:
+    - ols_cross_sectional
+    - ridge
+    - gradient_boosted_tree
+
+trading:
+  alpha_to_quotes: false
+  inventory_penalty: false
+  fees: true
+  fill_uncertainty: false
+  latency_stress_test: false
+  adverse_selection_measurement: false
+
+robustness:
+  - turnover_and_cost_sensitivity
+  - signal_decay
+  - cross_instrument_robustness
+  - training_window_sensitivity
+  - parameter_perturbation
+
+project_covers:
+  - factor/economic reasoning
+  - portfolio construction and turnover-aware evaluation
+  - temporal cross-validation discipline
+
+project_does_not_cover:
+  - order-book microstructure
+  - physical commodity fundamentals
+  - options/volatility
+
+separate_interview_prep:
+  - linear_algebra_proofs
+  - probability
+  - portfolio_theory

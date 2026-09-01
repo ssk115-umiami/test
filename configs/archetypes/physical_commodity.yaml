@@ -1,0 +1,84 @@
+archetype: physical_commodity
+name: "Physical Commodity Economics"
+best_for:
+  - metals merchants
+  - oil / refined-products desks
+  - physical commodity trading organizations
+
+canonical_title: "Cross-Market Physical Commodity Economics and Arbitrage Windows"
+
+canonical_research_question: >-
+  How persistent and tradeable are cross-market/cross-form price relationships
+  (e.g. LME vs. COMEX, crude/product crack spreads, regional premiums) once
+  freight, FX, and financing costs are accounted for, and when do they break
+  down?
+
+economic_hypothesis: >-
+  Physical commodity price relationships across exchanges, locations, or
+  processing stages are bounded by arbitrage but constrained by freight,
+  FX, financing/carry, and quality/logistics frictions, so apparent
+  dislocations should mean-revert unless a structural frictions shift
+  (e.g. tariffs, logistics disruption) is present.
+
+statistical_hypothesis: >-
+  The relationship is better modeled as a cost-of-carry/no-arbitrage bound
+  with regime-dependent width than as a stationary linear regression; the
+  quantitative layer should focus on estimating the bound and flagging
+  breaches rather than a black-box price forecast.
+
+data:
+  market_type: "physical_commodity_cross_market"
+  instrument: "e.g. LME vs COMEX copper, or WTI/Brent crack spreads"
+  frequency: "daily"
+  sources:
+    - "Exchange settlement data (LME, COMEX, ICE, NYMEX)"
+    - "Freight rate indices"
+    - "FX rates"
+  required_fields:
+    - timestamp
+    - market_a_price
+    - market_b_price
+    - freight_rate
+    - fx_rate
+  timestamp_policy: "strictly_ex_ante"
+
+features:
+  - freight_adjusted_spread
+  - fx_adjusted_spread
+  - financing_cost_estimate
+  - inventory_or_warehouse_stock_levels
+
+models:
+  baseline:
+    - naive_no_arbitrage_bound
+  predictive:
+    - ols
+    - ridge
+
+trading:
+  alpha_to_quotes: false
+  inventory_penalty: false
+  fees: true
+  fill_uncertainty: false
+  latency_stress_test: false
+  adverse_selection_measurement: false
+
+robustness:
+  - frictions_sensitivity
+  - structural_break_detection
+  - training_window_sensitivity
+
+project_covers:
+  - physical/commercial market structure reasoning
+  - no-arbitrage / cost-of-carry quantitative framework
+  - cross-market data handling
+
+project_does_not_cover:
+  - electronic market microstructure
+  - options/volatility
+  - high-frequency trading
+
+separate_interview_prep:
+  - market_specific_knowledge
+  - commercial_reasoning
+  - mental_math

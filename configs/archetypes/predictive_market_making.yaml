@@ -1,0 +1,100 @@
+archetype: predictive_market_making
+name: "Predictive Market Making / Microstructure"
+best_for:
+  - Headlands Technologies
+  - Jump-like systematic research roles
+  - Flow Traders
+  - Virtu
+  - GTS
+  - Old Mission
+  - HFT / electronic market makers
+  - systematic delta-one research
+
+canonical_title: "Predictive Market Making from Limit-Order-Book Data"
+
+canonical_research_question: >-
+  Can short-horizon order-book imbalance predict adverse price movement
+  well enough to improve the PnL of an inventory-constrained market-making
+  strategy after fees, latency, and fill uncertainty?
+
+economic_hypothesis: >-
+  Temporary supply/demand imbalance visible in the order book and recent
+  order flow contains short-horizon information about mid-price changes
+  and adverse-selection risk faced by a passive quoter.
+
+statistical_hypothesis: >-
+  Regularized and nonlinear models may extract signal from correlated,
+  noisy microstructure features, but gains in predictive accuracy may not
+  translate monotonically into trading PnL once fees, inventory limits,
+  and fill uncertainty are modeled.
+
+data:
+  market_type: "electronic_limit_order_book"
+  instrument: null
+  frequency: "event_or_subsecond"
+  sources:
+    - "Exchange-provided or vendor L2/trade historical data for a liquid, accessible market"
+  required_fields:
+    - timestamp
+    - bid_price_levels
+    - ask_price_levels
+    - bid_size_levels
+    - ask_size_levels
+    - trades
+  timestamp_policy: "strictly_ex_ante"
+
+features:
+  - top_level_imbalance
+  - multi_level_imbalance
+  - microprice
+  - spread
+  - signed_trade_flow
+  - short_horizon_returns
+  - realized_volatility
+  - trade_intensity
+  - add_cancel_intensity
+
+models:
+  baseline:
+    - no_alpha_symmetric_market_maker
+  predictive:
+    - logistic_regression
+    - ridge_or_regularized_logistic
+    - gradient_boosted_tree
+    - small_neural_network
+
+trading:
+  alpha_to_quotes: true
+  inventory_penalty: true
+  fees: true
+  fill_uncertainty: true
+  latency_stress_test: true
+  adverse_selection_measurement: true
+
+robustness:
+  - fee_sensitivity
+  - latency_sensitivity
+  - fill_model_sensitivity
+  - volatility_regimes
+  - spread_regimes
+  - feature_ablation
+  - training_window_sensitivity
+  - model_drift
+
+project_covers:
+  - electronic market data handling
+  - predictive signal research on noisy data
+  - automated trading / quoting decision layer
+  - PnL, inventory, and adverse-selection measurement
+  - production/debugging mindset (walk-forward retraining, drift)
+
+project_does_not_cover:
+  - physical/fundamental commodity reasoning
+  - true exchange-grade low-latency infrastructure
+  - options / volatility modeling
+
+separate_interview_prep:
+  - leetcode
+  - linear_algebra_proofs
+  - probability
+  - systems_architecture

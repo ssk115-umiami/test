@@ -1,0 +1,85 @@
+archetype: gas_basis
+name: "Natural Gas Fundamentals / Basis"
+best_for:
+  - gas trading desks
+  - energy majors
+  - commodity funds
+  - merchant energy desks
+
+canonical_title: "Storage, Weather, and Regional Basis Regimes in U.S. Natural Gas"
+
+canonical_research_question: >-
+  How much of regional natural-gas basis volatility is explained by
+  storage, weather-driven demand, and pipeline capacity constraints, and
+  where does that explanatory relationship break down?
+
+economic_hypothesis: >-
+  Regional gas basis (e.g. Henry Hub vs. a constrained regional hub)
+  reflects storage adequacy, weather-driven demand swings, and pipeline
+  takeaway capacity; basis should widen predictably under cold-weather
+  demand spikes or storage scarcity and compress otherwise.
+
+statistical_hypothesis: >-
+  Weather and storage variables should show strong but nonlinear and
+  threshold-like relationships with basis (e.g. cold-snap effects), making
+  a single linear model insufficient without explicit regime/interaction
+  terms.
+
+data:
+  market_type: "natural_gas_physical_and_futures"
+  instrument: "Henry Hub vs. one constrained regional hub"
+  frequency: "daily"
+  sources:
+    - "EIA natural gas storage and price data"
+    - "NOAA weather / heating-degree-day data"
+    - "Pipeline capacity / nomination data where available"
+  required_fields:
+    - timestamp
+    - henry_hub_price
+    - regional_hub_price
+    - storage_level
+    - heating_degree_days
+  timestamp_policy: "strictly_ex_ante"
+
+features:
+  - storage_deviation_from_5yr_avg
+  - heating_degree_days_forecast
+  - lagged_basis
+  - pipeline_capacity_utilization
+
+models:
+  baseline:
+    - naive_seasonal
+  predictive:
+    - ols
+    - ridge
+    - gradient_boosted_tree
+
+trading:
+  alpha_to_quotes: false
+  inventory_penalty: false
+  fees: true
+  fill_uncertainty: false
+  latency_stress_test: false
+  adverse_selection_measurement: false
+
+robustness:
+  - cold_snap_regime_analysis
+  - storage_scarcity_regime_analysis
+  - training_window_sensitivity
+  - feature_ablation
+
+project_covers:
+  - physical commodity / fundamental reasoning
+  - regime-dependent nonlinear effects (weather thresholds)
+  - ex-ante data timing for forecasts vs. actuals
+
+project_does_not_cover:
+  - electronic market microstructure
+  - options/volatility
+  - equity cross-sectional research
+
+separate_interview_prep:
+  - market_specific_knowledge
+  - probability
+  - mental_math

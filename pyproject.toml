@@ -1,0 +1,47 @@
+[project]
+name = "quant-project-factory"
+version = "0.1.0"
+description = "48-hour job-description-to-project factory for quant trading/research roles."
+requires-python = ">=3.11"
+readme = "README.md"
+dependencies = [
+    "pandas>=2.1",
+    "numpy>=1.26",
+    "scipy>=1.11",
+    "scikit-learn>=1.4",
+    "statsmodels>=0.14",
+    "pyarrow>=14.0",
+    "pydantic>=2.5",
+    "PyYAML>=6.0",
+    "typer>=0.9",
+    "httpx>=0.26",
+    "matplotlib>=3.8",
+]
+
+[project.optional-dependencies]
+boosted = ["xgboost>=2.0", "lightgbm>=4.2"]
+neural = ["torch>=2.2"]
+bigdata = ["duckdb>=0.10", "polars>=0.20"]
+dev = ["pytest>=7.4", "pytest-cov>=4.1", "ruff>=0.2"]
+
+[project.scripts]
+qpf = "project_factory.cli:app"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["project_factory*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 130
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+ignore = [
+    "B008",  # typer.Option(...)/typer.Argument(...) in defaults is the required typer idiom
+]
