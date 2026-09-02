@@ -4,9 +4,10 @@ Both real adapters (`BybitPublicDataAdapter`, `NyisoPowerDataAdapter`)
 were built from documentation cross-checked as carefully as this
 session's sandbox allowed (it blocks all exchange/vendor/government
 domains — see `IMPLEMENTATION_STATUS.md`). Real-data runs against Bybit
-have found and fixed two issues so far — an order-book 404 (Round 1) and
-a trades schema mismatch (Round 2), both in §1 below. NYISO has not been
-run against live data yet.
+have found and fixed three issues so far — an order-book 404 (Round 1), a
+trades schema mismatch (Round 2), and a catastrophic order-book
+under-sampling bug (Round 3, only 2 rows for a full day) — all in §1
+below. NYISO has not been run against live data yet.
 
 Nothing here should be read as a claim that either adapter works — that
 is precisely what these steps determine.
@@ -51,10 +52,15 @@ qpf run --spec projects/<id>/project_spec.yaml --stage data
 ```
 
 **What "success" looks like:** `check_connectivity()` returns silently,
-`load()` returns a non-empty DataFrame matching the schema in section 3
-below, and `report.verified is True` (this is set automatically by
-`load()` — see `project_factory/data/verification.py`). Confirm it
-persisted:
+`load()` returns a DataFrame matching the schema in section 3 below with
+roughly one row per `sampling_interval_ms` across the requested span
+(**~86,400 rows for one day at the 1000ms default** — not a handful), and
+`report.verified is True`. As of Round 3, `verified` is **not** set just
+because `load()` parsed without exceptions — `validate()` runs
+`_orderbook_output_sanity()` (row count vs. expected, sampling cadence,
+crossed-book count, nonpositive-size count) and only calls
+`mark_verified()` if all four pass; see the Round 3 finding below for
+exactly what a failing run looks like. Confirm it persisted:
 
 ```bash
 python -c "
@@ -157,6 +163,125 @@ print(report.model_dump())
 "
 ```
 
+### Round 3 finding (fixed): only 2 rows for a full day
+
+A real run succeeded syntactically — no exception, `verified` got set —
+but returned `df.shape == (2, 23)`, with timestamps
+`2025-06-01 00:00:00.948` and `2025-06-02 00:00:00.947`. Not remotely
+usable for a market-making dataset. Root cause: the adapter only ever
+kept `type == "snapshot"` records and silently discarded every `delta`
+record. Bybit's archive apparently contains very few raw snapshots per
+day — the book is otherwise conveyed almost entirely through `delta`
+messages — so nearly the whole day was being thrown away. This had been
+flagged in the Round 1 docstring as a scope-cut ("delta reconstruction
+remains a documented, not-yet-built extension"); it turned out to be the
+actual bug, not an optional refinement.
+
+**Fix — real order-book reconstruction**, implemented per Bybit's
+documented protocol (cloned `bybit-exchange/docs`,
+`v5/websocket/public/orderbook.mdx`) and cross-checked against Bybit's
+own officially-linked reference implementation (pybit's
+`_process_delta_orderbook`, fetched at the exact commit that repo's FAQ
+links to):
+
+- Every `snapshot` fully **replaces** the book (not just the first one).
+- Every `delta`, applied in sequence: `size == 0` **deletes** that price
+  level; otherwise it **inserts or updates** it. Levels are kept
+  unordered internally and sorted only when top-of-book is read — the
+  reference implementation confirms delta entries are not necessarily
+  kept sorted.
+- `seq`/`u` are tracked as **diagnostics only** (a non-increasing `seq`
+  between consecutive deltas is counted as a "sequence anomaly"; a
+  non-initial snapshot is counted as a "reset") — Bybit's docs do not
+  commit to a strict +1-per-message increment, so nothing assumes one.
+
+The reconstructed book's top-5 state is then **sampled on a fixed grid**
+(`sampling_interval_ms`, constructor argument, default
+`DEFAULT_SAMPLING_INTERVAL_MS = 1000`) rather than emitted on every raw
+update — Level 200 pushes are documented at ~100ms native frequency, so
+emitting every update would be ~864,000 rows/symbol/day, far more
+resolution than this archetype's seconds-scale prediction horizon needs.
+1000ms also matches `_aggregate_trades_to_seconds`'s own 1-second
+buckets. **Lookahead safety**: for grid point `g`, every record with
+timestamp `<= g` is applied *before* the sample for `g` is taken — a
+message that arrives strictly after `g` cannot leak into a sample labeled
+`g`.
+
+**On the `2025-06-02 00:00:00.947` boundary timestamp**: confirmed (by
+reading `_dates()`) that `start == end == "2025-06-01"` fetches exactly
+one file — `pd.date_range` with equal start/end yields a single date —
+so this was never a date-range bug fetching a second day. The record must
+be embedded inside that one file, ~1ms past the first record 24h prior;
+the most plausible explanation is a boundary/closing record included for
+continuity into the next day's stream, a common daily-archive convention
+— this could not be independently confirmed by inspecting raw bytes from
+this sandbox (no Bybit network access here). The reconstruction does not
+assume midnight-to-midnight bounds, so this record is naturally included
+as the tail of one extra sample rather than needing special-case
+handling.
+
+**`validate()` no longer trusts a clean parse.** It now calls
+`_orderbook_output_sanity(df, sampling_interval_ms, expected_span_ms)`,
+which checks:
+
+| check | fails when |
+|---|---|
+| `row_count_ok` | rows < 50% of `expected_span_ms / sampling_interval_ms` |
+| `cadence_ok` | median inter-row gap deviates from `sampling_interval_ms` by more than 50% |
+| `crossed_book_ok` | more than 1% of rows have `bid_price_1 >= ask_price_1` |
+| `nonpositive_size_ok` | any row has `bid_size_1 <= 0` or `ask_size_1 <= 0` |
+
+`mark_verified()` is only called if all four pass (`sanity["sane"]`).
+This is exactly the check that would have caught the 2-row result
+directly — `2 / 86400 = 0.00002 « 0.5`, so `row_count_ok` would have been
+`False` and the dataset would never have been marked verified. The
+sanity result and the reconstruction event counts (`n_snapshots`,
+`n_deltas`, `n_resets`, `n_deltas_before_snapshot`,
+`n_sequence_anomalies`, `n_malformed`) are both appended to the returned
+`DataQualityReport.notes`, so a failing run tells you *why* it failed
+without re-running with extra logging.
+
+**Updated one-day local verification command** (unchanged shape from
+Round 2 — same command, now expect ~86,400 rows instead of 2):
+
+```bash
+source .venv/bin/activate
+
+python -c "
+from project_factory.data.adapters.bybit_l2 import BybitPublicDataAdapter
+
+adapter = BybitPublicDataAdapter(
+    symbol='BTCUSDT',
+    market='spot',
+    start='2025-06-01',
+    end='2025-06-01',
+)
+adapter.check_connectivity()
+print('connectivity OK')
+
+df = adapter.load()
+print('shape:', df.shape)
+print('timestamp min/max:', df['timestamp'].min(), df['timestamp'].max())
+print('median sampling interval (ms):', df['timestamp'].diff().median() / __import__('pandas').Timedelta(milliseconds=1))
+print('bid>=ask violations:', int((df['bid_price_1'] >= df['ask_price_1']).sum()))
+print('nonpositive bid size:', int((df['bid_size_1'] <= 0).sum()))
+print('nonpositive ask size:', int((df['ask_size_1'] <= 0).sum()))
+print('reconstruction diagnostics:', adapter._last_orderbook_diagnostics)
+print(df.head())
+print(df.tail())
+
+report = adapter.validate(df)
+print('verified:', report.verified)
+print(report.model_dump())
+"
+```
+
+Please report back: **row count, timestamp min/max, median sampling
+interval, bid<ask violation count, nonpositive-size count,
+`adapter._last_orderbook_diagnostics` (sequence-gap/reset counts), and
+the first/last 5 rows** — this is what confirms Round 3's fix against
+real data (this sandbox cannot reach Bybit to confirm it directly).
+
 ### Preserving a real fixture once this succeeds
 
 Every real network fetch writes its raw bytes to
@@ -229,16 +354,20 @@ can just re-run with the corrected string: `NyisoPowerDataAdapter(zone="<the cor
 
 **Source archive's actual depth/frequency** (confirmed via
 `github.com/nssanta/Bybit-Download-OrderBook-Trades-Klines`'s README,
-cross-referencing two independent scripts in that repo): raw snapshots
-carry **200 price levels per side**, refreshed roughly **every 200ms**,
-archived daily from **May 2025 onward**. This adapter deliberately keeps
-only the **top 5 levels** (`bid/ask_price_1..5`) — a documented v1 scope
-cut, not a limitation of the source data — and reads only `snapshot`
-records, not the `delta` records between them (also documented; see
-`_parse_orderbook_records`'s docstring). Both are legitimate order-book
-depth, not candles or trades.
+cross-referencing two independent scripts in that repo, and Bybit's own
+`v5/websocket/public/orderbook.mdx`): raw snapshots carry **200 price
+levels per side**; the full stream (snapshot + delta) refreshes at up to
+**100ms**, archived daily from **May 2025 onward**. This adapter
+reconstructs the full book from every `snapshot` and `delta` record (see
+the Round 3 finding above — an earlier version only read `snapshot`
+records and this was the root cause of a 2-rows-per-day bug), then keeps
+the **top 5 levels** (`bid/ask_price_1..5`) sampled at a fixed
+`sampling_interval_ms` (default 1000ms) — a documented v1 scope choice
+(depth and cadence), not a limitation of the source data, which is
+genuine L2 order-book information throughout, not candles or trades.
 
-One row per order-book snapshot, merged with trade aggregates:
+One row per sampling-grid point (default: one per second), merged with
+trade aggregates:
 
 | column | type | notes |
 |---|---|---|
@@ -299,19 +428,24 @@ one) — you never need to remember which adapter raises what.
 
 ### Fixture-based tests for the fixed schema
 
-`tests/test_bybit_adapter_parsing.py::test_parse_orderbook_records_handles_full_confirmed_record_shape`
-uses a JSONL fixture built field-for-field from
-`convert_to_parquet.py`'s `parse_record()` in the same real downloader
-repo (`ts`, `cts`, `type`, nested `data.u`/`data.seq`/`data.b`/`data.a`)
-— the closest available substitute for a live-captured file from inside
-this sandbox (no network access to Bybit here). It is schema-accurate
-against that source's own parser, not a byte-for-byte real download;
-once you've run §1 successfully, consider saving one real `.data.zip`
-under `tests/fixtures/` and pointing a test at it directly for a
-stronger guarantee.
+`tests/test_bybit_adapter_parsing.py::test_reconstruct_and_sample_orderbook_applies_deltas_before_snapshot_grid_point`
+and `::test_reconstruct_and_sample_orderbook_does_not_look_ahead` are the
+Round 3 regression tests — they build a small synthetic snapshot+delta
+stream (schema-accurate, not a live capture — no network access to Bybit
+from this sandbox) and confirm the reconstruction applies deltas before
+sampling and never leaks a future delta into an earlier grid point.
+`::test_orderbook_output_sanity_flags_the_round_3_two_row_failure`
+reproduces the exact real-world failure shape (2 rows for a full day) and
+asserts the new sanity gate rejects it. Once you've run §1 successfully,
+consider saving one real `.data.zip` under `tests/fixtures/` and pointing
+a test at it directly for a stronger guarantee than a constructed
+fixture.
 `tests/test_bybit_adapter_parsing.py::test_orderbook_url_includes_market_segment`
 and `::test_start_date_before_orderbook_availability_window_raises` are
-regression tests for the two Round 1 bugs specifically.
+regression tests for the two Round 1 bugs specifically; the trades-schema
+tests (`test_aggregate_trades_to_seconds_matches_real_observed_bybit_schema`,
+`::test_aggregate_trades_to_seconds_raises_on_unrecognized_side_value`)
+cover Round 2.
 
 ---
 

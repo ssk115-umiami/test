@@ -231,10 +231,10 @@ Milestone 4 (NYISO/EIA/weather) will hit the identical constraint.
   next step before trusting it is running `qpf run --stage data` (no
   `--synthetic`) outside this sandbox and fixing whatever's wrong (most
   likely: the order-book archive's exact directory path).
-- Order-book parsing only reads `snapshot` records, dropping `delta`
-  records between snapshots (documented in `_parse_orderbook_records`) —
-  a reasonable v1 scope call (section 22), full delta-based book
-  reconstruction is a natural first extension once real data is flowing.
+- ~~Order-book parsing only reads `snapshot` records, dropping `delta`
+  records between snapshots~~ — fixed in Round 3 (see below); full
+  snapshot+delta reconstruction is now implemented and sampled at a
+  configurable interval.
 - The robustness sweep automates 2 of ~8 items in section 6's list
   (fee/latency sensitivity); the rest are implemented as callable
   `FailureAnalyzer`/model methods but not wired into an automated sweep.
@@ -489,17 +489,95 @@ schema-accurate-but-constructed) test fixture. See
 `NyisoPowerDataAdapter` has not yet been run against live data — still
 fully unverified.
 
+## Round 3 real-data verification: Bybit order-book under-sampling (2 rows/day)
+
+Verification progressed past Rounds 1-2 (connectivity, URL, trades
+schema) and produced a syntactically valid but useless result:
+`df.shape == (2, 23)` for a full trading day, with timestamps
+`2025-06-01 00:00:00.948` and `2025-06-02 00:00:00.947`. Root cause: the
+adapter only ever parsed `type == "snapshot"` records and silently
+dropped every `delta` record; Bybit's archive apparently conveys almost
+the entire book through deltas, so the previous implementation was
+discarding nearly the whole day. This exact gap had been flagged as a
+scope-cut in the Round 1 docstring ("delta reconstruction remains ...
+not-yet-built") — it turned out to be the actual bug rather than an
+optional refinement.
+
+**Fix**: implemented full snapshot+delta order-book reconstruction
+(`_LiveOrderBook`, `_apply_record`, `_reconstruct_and_sample_orderbook`
+in `bybit_l2.py`), root-caused against Bybit's own documented protocol
+(cloned `bybit-exchange/docs`, `v5/websocket/public/orderbook.mdx`) and
+cross-checked against Bybit's officially-linked reference implementation
+(pybit's `_process_delta_orderbook`, fetched at the exact commit that
+repo's FAQ links to) rather than re-guessed:
+
+- Every `snapshot` fully replaces the book; every `delta` deletes
+  (`size == 0`) / inserts / updates a price level, applied in sequence.
+- The reconstructed top-5 book is sampled on a fixed grid
+  (`sampling_interval_ms`, new constructor argument, default 1000ms —
+  `DEFAULT_SAMPLING_INTERVAL_MS`) instead of emitted on every raw update
+  (documented native cadence ~100ms would be ~864,000 rows/day —
+  intractable and far finer than this archetype's prediction horizon
+  needs). The sampling loop applies every record with `timestamp <= grid
+  point` before taking that grid point's sample, so a later message can
+  never leak into an earlier sample (lookahead safety).
+- `seq`/`u` are tracked as diagnostics (`n_sequence_anomalies`,
+  `n_resets`, `n_deltas_before_snapshot`, `n_malformed`), not assumed to
+  increment by exactly 1 (Bybit's docs don't commit to that).
+- Investigated the `2025-06-02 00:00:00.947` boundary timestamp: `_dates()`
+  fetches exactly one file for `start == end` (confirmed by code
+  inspection, not a date-range bug) — the record is most likely a
+  boundary/closing record embedded in that single file, a common
+  daily-archive convention; not independently confirmable from bytes in
+  this sandbox.
+
+**`validate()` no longer marks a result verified from a clean parse
+alone** — the exact gap that let the 2-row result through originally.
+It now runs `_orderbook_output_sanity()` (row count vs. expected from
+`sampling_interval_ms`, median cadence, crossed-book fraction,
+nonpositive-size count) and only calls `mark_verified()` if all four
+checks pass; the sanity result and reconstruction event counts are both
+appended to `DataQualityReport.notes` either way, so a failing run
+explains itself.
+
+New regression tests (`test_bybit_adapter_parsing.py`):
+`test_live_order_book_snapshot_then_delta_update_insert_delete`,
+`test_live_order_book_second_snapshot_fully_resets`,
+`test_reconstruct_and_sample_orderbook_applies_deltas_before_snapshot_grid_point`,
+`test_reconstruct_and_sample_orderbook_does_not_look_ahead`,
+`test_reconstruct_and_sample_orderbook_counts_deltas_before_snapshot_and_sequence_anomalies`,
+`test_reconstruct_and_sample_orderbook_second_snapshot_counted_as_reset`,
+`test_reconstruct_and_sample_orderbook_empty_input_returns_empty_frame_not_error`,
+`test_orderbook_output_sanity_flags_the_round_3_two_row_failure` (reproduces
+the exact real failure shape and asserts it's now rejected),
+`test_orderbook_output_sanity_flags_crossed_book_and_nonpositive_size`,
+`test_orderbook_output_sanity_passes_for_a_well_formed_dense_day`. Also
+updated `test_local_ingestion.py`'s Bybit local-fixture test: a
+single-record fixture now correctly comes back `verified=False` (sparse
+data must fail the sanity gate even via the local-file path), and a new
+test confirms a fixture that IS dense enough for its configured
+`sampling_interval_ms` does get marked verified.
+**125/125 tests passing, ruff clean.**
+
+The one-day local verification command is unchanged in shape (see
+`VERIFICATION_GUIDE.md` §1, "Round 3 finding") — only the expected output
+changed, from 2 rows to roughly one row per second (~86,400 for a full
+day at the default sampling interval). This still could not be confirmed
+against live Bybit data from this sandbox.
+
 ## Blockers
 
-- Milestones 1-4 complete and tested (117/117). Two open items, both
+- Milestones 1-4 complete and tested (125/125). Two open items, both
   needing an environment with normal internet access (this sandbox
   blocks it):
   1. Verify `NyisoPowerDataAdapter` against live NYISO data (not yet
      attempted).
-  2. Confirm the Round 2 trades-schema fix actually produces a
-     successful end-to-end `load()` for `BybitPublicDataAdapter` (the
-     fix is grounded in Bybit's own official docs, but has not itself
-     been re-run against live data from this session).
+  2. Confirm the Round 3 order-book reconstruction fix actually produces
+     a full-density result (row count, cadence, crossed-book/nonpositive-size
+     counts, sequence-gap/reset counts) against live Bybit data — the fix
+     is grounded in Bybit's own documented protocol and reference
+     implementation, but has not itself been re-run against live data
+     from this session.
 - See the companion verification guide for exact commands, expected
   schemas, and how to read each adapter's failure modes.
 
@@ -507,14 +585,14 @@ fully unverified.
 
 ```bash
 source .venv/bin/activate
-pytest tests/ -v   # confirm Milestones 1-4 + both Bybit fixes still green (117/117)
+pytest tests/ -v   # confirm Milestones 1-4 + all three Bybit fixes still green (125/125)
 ```
 
-Then, outside this sandbox: re-run the Bybit verification sequence to
-confirm the Round 2 fix, then the NYISO sequence for the first time (both in
-`VERIFICATION_GUIDE.md`). Once both show `verified: true`, the natural
-next steps are the packaging / interview-mastery pass (section 13, hours
-36-48) and, if desired, extending either archetype (Bybit delta-record
-book reconstruction; NYISO comparison-zone spread features; a weather
-data source for the power archetype) — but per instruction, this session
-stops here until the real-data paths are validated.
+Then, outside this sandbox: re-run the Bybit verification sequence (§1's
+"Round 3 finding" command) to confirm the reconstruction fix, then the
+NYISO sequence for the first time (both in `VERIFICATION_GUIDE.md`). Once
+both show `verified: true`, the natural next steps are the packaging /
+interview-mastery pass (section 13, hours 36-48) and, if desired,
+extending either archetype (NYISO comparison-zone spread features; a
+weather data source for the power archetype) — but per instruction, this
+session stops here until the real-data paths are validated.

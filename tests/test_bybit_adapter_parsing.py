@@ -11,86 +11,148 @@ import pytest
 from project_factory.data.adapters.bybit_l2 import (
     BybitPublicDataAdapter,
     _aggregate_trades_to_seconds,
-    _parse_orderbook_records,
+    _LiveOrderBook,
+    _orderbook_output_sanity,
+    _reconstruct_and_sample_orderbook,
 )
 from project_factory.data.errors import DataSourceSchemaError
 
 
-def test_parse_orderbook_records_handles_full_confirmed_record_shape():
-    """This fixture uses every field in the schema confirmed by directly
-    reading github.com/nssanta/Bybit-Download-OrderBook-Trades-Klines's
-    convert_to_parquet.py `parse_record()` (cloned and inspected, not
-    guessed): top-level `ts`, `cts`, `type`; nested `data.u`, `data.seq`,
-    `data.b`, `data.a`. This is the closest available substitute for a
-    live-captured file in this sandbox (network access to Bybit is
-    blocked here) — it is schema-accurate against that source's own
-    parser, not a byte-for-byte real download. `cts`/`u`/`seq` are
-    present (as real records have them) but unused by this adapter."""
+def test_live_order_book_snapshot_then_delta_update_insert_delete():
+    """Core reconstruction semantics per bybit-exchange/docs
+    v5/websocket/public/orderbook.mdx and pybit's reference
+    _process_delta_orderbook: snapshot fully replaces the book; a delta's
+    size==0 deletes a level, a new price inserts, an existing price
+    updates."""
+    book = _LiveOrderBook()
+    book.reset(bids=[["100.0", "5"], ["99.9", "3"]], asks=[["100.1", "4"], ["100.2", "6"]])
+    assert book.top_n(n=2) == {
+        "bid_price_1": 100.0, "bid_size_1": 5.0, "ask_price_1": 100.1, "ask_size_1": 4.0,
+        "bid_price_2": 99.9, "bid_size_2": 3.0, "ask_price_2": 100.2, "ask_size_2": 6.0,
+    }
+
+    # update an existing level, insert a new one, delete one (size == 0)
+    book.apply_delta(bids=[["100.0", "7"], ["99.8", "1"], ["99.9", "0"]], asks=[])
+    assert book.bids == {100.0: 7.0, 99.8: 1.0}
+    assert book.asks == {100.1: 4.0, 100.2: 6.0}
+
+
+def test_live_order_book_second_snapshot_fully_resets():
+    book = _LiveOrderBook()
+    book.reset(bids=[["100.0", "5"]], asks=[["100.1", "4"]])
+    book.apply_delta(bids=[["99.0", "1"]], asks=[])
+    assert 99.0 in book.bids
+
+    book.reset(bids=[["50.0", "1"]], asks=[["50.1", "1"]])
+    assert book.bids == {50.0: 1.0}
+    assert 99.0 not in book.bids
+
+
+def test_reconstruct_and_sample_orderbook_applies_deltas_before_snapshot_grid_point():
+    """Regression test for the Round 3 bug: a snapshot-only extraction
+    would produce 1 row here; full reconstruction with deltas applied
+    must reflect the post-delta state at the sample grid point."""
     records = [
-        {
-            "ts": 1748736000123,
-            "cts": 1748736000100,
-            "type": "snapshot",
-            "data": {
-                "u": 123456789,
-                "seq": 987654321,
-                "b": [["67420.10", "0.842"], ["67419.90", "1.204"]],
-                "a": [["67420.20", "0.512"], ["67420.30", "2.001"]],
-            },
-        },
-        {
-            "ts": 1748736000323,
-            "cts": 1748736000300,
-            "type": "delta",
-            "data": {"u": 123456790, "seq": 987654322, "b": [["67419.90", "0.900"]], "a": []},
-        },
+        {"ts": 0, "type": "snapshot", "data": {"b": [["100.0", "5"]], "a": [["100.1", "4"]]}},
+        {"ts": 400, "type": "delta", "data": {"b": [["100.0", "9"]], "a": []}},
+        {"ts": 1500, "type": "delta", "data": {"b": [["100.0", "2"]], "a": []}},
     ]
+    df, diag = _reconstruct_and_sample_orderbook(records, sampling_interval_ms=1000)
 
-    df = _parse_orderbook_records(records, depth=200)
+    assert len(df) == 2  # grid points at 1000ms and a final row at 1500ms
+    assert df["bid_size_1"].iloc[0] == pytest.approx(9.0)  # delta at 400ms applied before 1000ms sample
+    assert df["bid_size_1"].iloc[1] == pytest.approx(2.0)
+    assert diag["n_snapshots"] == 1
+    assert diag["n_deltas"] == 2
 
-    assert len(df) == 1  # only the snapshot
-    assert df["bid_price_1"].iloc[0] == pytest.approx(67420.10)
-    assert df["bid_size_1"].iloc[0] == pytest.approx(0.842)
-    assert df["ask_price_1"].iloc[0] == pytest.approx(67420.20)
 
-
-def test_parse_orderbook_records_extracts_snapshot_only():
+def test_reconstruct_and_sample_orderbook_does_not_look_ahead():
+    """A delta strictly AFTER a grid point must not affect that grid
+    point's sample — only records with timestamp <= grid point apply."""
     records = [
-        {
-            "type": "snapshot",
-            "ts": 1700000000000,
-            "data": {
-                "b": [["100.0", "5"], ["99.9", "3"]],
-                "a": [["100.1", "4"], ["100.2", "6"]],
-            },
-        },
-        {"type": "delta", "ts": 1700000001000, "data": {"b": [["100.05", "1"]], "a": []}},
-        {
-            "type": "snapshot",
-            "ts": 1700000002000,
-            "data": {
-                "b": [["101.0", "2"]],
-                "a": [["101.1", "3"]],
-            },
-        },
+        {"ts": 0, "type": "snapshot", "data": {"b": [["100.0", "5"]], "a": [["100.1", "4"]]}},
+        {"ts": 1200, "type": "delta", "data": {"b": [["100.0", "999"]], "a": []}},
     ]
-    df = _parse_orderbook_records(records, depth=200)
+    df, _ = _reconstruct_and_sample_orderbook(records, sampling_interval_ms=1000)
 
-    assert len(df) == 2  # delta record dropped
-    assert df["bid_price_1"].tolist() == [100.0, 101.0]
-    assert df["bid_size_1"].tolist() == [5.0, 2.0]
-    assert df["ask_price_1"].tolist() == [100.1, 101.1]
-    # levels beyond available depth are None
-    assert pd.isna(df["bid_price_3"].iloc[1])
+    first_sample = df[df["timestamp"] == pd.Timestamp("1970-01-01 00:00:01.000")]
+    assert len(first_sample) == 1
+    assert first_sample["bid_size_1"].iloc[0] == pytest.approx(5.0)  # not yet 999
 
 
-def test_parse_orderbook_records_sorts_by_timestamp():
+def test_reconstruct_and_sample_orderbook_counts_deltas_before_snapshot_and_sequence_anomalies():
     records = [
-        {"type": "snapshot", "ts": 2000, "data": {"b": [["1", "1"]], "a": [["2", "1"]]}},
-        {"type": "snapshot", "ts": 1000, "data": {"b": [["1", "1"]], "a": [["2", "1"]]}},
+        {"ts": 0, "type": "delta", "data": {"b": [["1", "1"]], "a": []}},  # before any snapshot
+        {"ts": 100, "type": "snapshot", "data": {"b": [["100.0", "5"]], "a": [["100.1", "4"]], "seq": 10}},
+        {"ts": 200, "type": "delta", "data": {"b": [["100.0", "6"]], "a": [], "seq": 5}},  # non-increasing seq
     ]
-    df = _parse_orderbook_records(records, depth=200)
-    assert df["timestamp"].is_monotonic_increasing
+    _, diag = _reconstruct_and_sample_orderbook(records, sampling_interval_ms=1000)
+
+    assert diag["n_deltas_before_snapshot"] == 1
+    assert diag["n_sequence_anomalies"] == 1
+
+
+def test_reconstruct_and_sample_orderbook_second_snapshot_counted_as_reset():
+    records = [
+        {"ts": 0, "type": "snapshot", "data": {"b": [["100.0", "5"]], "a": [["100.1", "4"]]}},
+        {"ts": 500, "type": "snapshot", "data": {"b": [["50.0", "1"]], "a": [["50.1", "1"]]}},
+    ]
+    _, diag = _reconstruct_and_sample_orderbook(records, sampling_interval_ms=1000)
+    assert diag["n_resets"] == 1
+
+
+def test_reconstruct_and_sample_orderbook_empty_input_returns_empty_frame_not_error():
+    df, diag = _reconstruct_and_sample_orderbook([], sampling_interval_ms=1000)
+    assert df.empty
+    assert diag["n_records"] == 0
+
+
+def test_orderbook_output_sanity_flags_the_round_3_two_row_failure():
+    """Regression test for the exact real-world failure reported: 2 rows
+    for a full trading day must NOT pass sanity (row_count_ok)."""
+    df = pd.DataFrame(
+        {
+            "timestamp": [pd.Timestamp("2025-06-01"), pd.Timestamp("2025-06-02")],
+            "bid_price_1": [100.0, 100.0],
+            "bid_size_1": [1.0, 1.0],
+            "ask_price_1": [100.1, 100.1],
+            "ask_size_1": [1.0, 1.0],
+        }
+    )
+    sanity = _orderbook_output_sanity(df, sampling_interval_ms=1000, expected_span_ms=24 * 60 * 60 * 1000)
+    assert sanity["sane"] is False
+    assert sanity["row_count_ok"] is False
+
+
+def test_orderbook_output_sanity_flags_crossed_book_and_nonpositive_size():
+    df = pd.DataFrame(
+        {
+            "timestamp": pd.date_range("2025-06-01", periods=10, freq="1s"),
+            "bid_price_1": [100.0] * 9 + [100.2],  # last row crosses (bid >= ask)
+            "bid_size_1": [1.0] * 9 + [0.0],  # last row also nonpositive
+            "ask_price_1": [100.1] * 10,
+            "ask_size_1": [1.0] * 10,
+        }
+    )
+    sanity = _orderbook_output_sanity(df, sampling_interval_ms=1000, expected_span_ms=10 * 1000)
+    assert sanity["crossed_book_ok"] is False
+    assert sanity["nonpositive_size_ok"] is False
+    assert sanity["sane"] is False
+
+
+def test_orderbook_output_sanity_passes_for_a_well_formed_dense_day():
+    n = 86400
+    df = pd.DataFrame(
+        {
+            "timestamp": pd.date_range("2025-06-01", periods=n, freq="1s"),
+            "bid_price_1": [100.0] * n,
+            "bid_size_1": [1.0] * n,
+            "ask_price_1": [100.1] * n,
+            "ask_size_1": [1.0] * n,
+        }
+    )
+    sanity = _orderbook_output_sanity(df, sampling_interval_ms=1000, expected_span_ms=24 * 60 * 60 * 1000)
+    assert sanity["sane"] is True
 
 
 def test_aggregate_trades_to_seconds_sums_signed_volume():
