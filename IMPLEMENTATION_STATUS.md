@@ -565,19 +565,67 @@ changed, from 2 rows to roughly one row per second (~86,400 for a full
 day at the default sampling interval). This still could not be confirmed
 against live Bybit data from this sandbox.
 
+## Round 4 real-data verification: Bybit is now verified; two integrity gaps fixed
+
+A real run confirmed the Round 3 fix: **`(86401, 23)`, 1s median
+cadence, 430,315 records reconstructed (2 snapshots / 430,313 deltas), 0
+sequence anomalies, 0 malformed records, 0 crossed books, 0 nonpositive
+top-of-book sizes.** This is the first Bybit run that actually passed
+`_orderbook_output_sanity()` and got marked `verified=True` against live
+data. Two follow-up data-integrity checks were requested before model
+work — both turned out to be real bugs, not just unconfirmed assumptions:
+
+1. **Half-open date window.** The `86401`st row was the Round 3
+   archive-boundary record (`2025-06-02 00:00:00.947`) — Round 3 had
+   explained it but not excluded it. `load()` now clips the concatenated
+   order-book frame to `[start, end + 1 day)`, dropping any record dated
+   on/after the day after `end`; the dropped-row count is recorded in
+   `adapter._last_orderbook_diagnostics["n_rows_outside_requested_window"]`.
+2. **Trade volume was silently forward-filled onto quiet seconds.**
+   `_aggregate_trades_to_seconds` only emits rows for seconds that
+   actually had trades (sparse); feeding that sparse frame directly into
+   `merge_asof(direction="backward")` meant a quiet second's order-book
+   row matched whatever earlier second last had activity, repeating its
+   volume/count instead of reporting zero — real trade-flow contamination
+   at every "current" quiet second in the whole dataset until the next
+   real trade. Fixed with `_densify_trade_seconds()`, which reindexes the
+   sparse aggregate onto a continuous one-row-per-second grid (explicit
+   `0.0` for quiet seconds) before the asof match, so the match can only
+   land on the current second's own bucket.
+   `trade_signed_volume`/`trade_count` were already computed
+   independently per second (two `.agg()` columns from one groupby) —
+   that part was correct; only the merge step was wrong.
+
+New regression tests: `test_densify_trade_seconds_fills_zero_not_forward_fill`,
+`test_densify_trade_seconds_empty_input_returns_all_zero_grid`,
+`test_bybit_adapter_excludes_out_of_window_boundary_record`,
+`test_bybit_adapter_load_zero_fills_quiet_seconds_not_forward_fill`.
+**129/129 tests passing, ruff clean.**
+
+Full detail (including the exact real-run diagnostics and both fixture
+recipes) is in `VERIFICATION_GUIDE.md` §1's "Round 4 finding".
+
 ## Blockers
 
-- Milestones 1-4 complete and tested (125/125). Two open items, both
-  needing an environment with normal internet access (this sandbox
-  blocks it):
-  1. Verify `NyisoPowerDataAdapter` against live NYISO data (not yet
-     attempted).
-  2. Confirm the Round 3 order-book reconstruction fix actually produces
-     a full-density result (row count, cadence, crossed-book/nonpositive-size
-     counts, sequence-gap/reset counts) against live Bybit data — the fix
-     is grounded in Bybit's own documented protocol and reference
-     implementation, but has not itself been re-run against live data
-     from this session.
+- Milestones 1-4 complete and tested (129/129).
+  - **Bybit is verified against real data as of Round 4** (pending one
+    more confirmation run to see the exact shape become `(86400, 23)`
+    after the window-clip fix — not yet re-run against live data from
+    this session).
+  - `NyisoPowerDataAdapter` has not been run against live data yet (not
+    yet attempted).
+  - **Real fixture preservation is blocked on this sandbox's lack of
+    network access**: the successful Round 3/4 runs happened in the
+    user's own local environment (per the Milestone 4 local-ingestion
+    design), so the actual downloaded `BTCUSDT_2025-06-01.csv.gz` /
+    `2025-06-01_BTCUSDT_ob200.data.zip` bytes are not present anywhere in
+    this session (confirmed by searching the filesystem — nothing under
+    `data_cache/` and no matching files outside this session's own
+    synthetic pytest fixtures). See `VERIFICATION_GUIDE.md` §1's
+    "Preserving a real fixture" section for the exact commands to copy
+    them locally; they need to reach this repo (e.g. committed on this
+    branch from the user's machine) before a real-fixture test can be
+    added here.
 - See the companion verification guide for exact commands, expected
   schemas, and how to read each adapter's failure modes.
 
@@ -585,14 +633,26 @@ against live Bybit data from this sandbox.
 
 ```bash
 source .venv/bin/activate
-pytest tests/ -v   # confirm Milestones 1-4 + all three Bybit fixes still green (125/125)
+pytest tests/ -v   # confirm Milestones 1-4 + all four Bybit rounds still green (129/129)
 ```
 
 Then, outside this sandbox: re-run the Bybit verification sequence (§1's
-"Round 3 finding" command) to confirm the reconstruction fix, then the
-NYISO sequence for the first time (both in `VERIFICATION_GUIDE.md`). Once
-both show `verified: true`, the natural next steps are the packaging /
+command) once more to confirm the Round 4 window-clip fix (expect
+`(86400, 23)`, not `86401`), then the NYISO sequence for the first time
+(both in `VERIFICATION_GUIDE.md`). Once both show `verified: true`, and
+once the two real raw files are committed into `tests/fixtures/bybit_raw/`
+(see the Blockers note above), the natural next steps are the packaging /
 interview-mastery pass (section 13, hours 36-48) and, if desired,
 extending either archetype (NYISO comparison-zone spread features; a
-weather data source for the power archetype) — but per instruction, this
-session stops here until the real-data paths are validated.
+weather data source for the power archetype).
+
+A first real-data `predictive_market_making` research pass (baseline ->
+regularized linear/logistic -> GBT, walk-forward validation, basic
+quoting/PnL) was requested next. The full pipeline for this already
+exists (Milestone 3's `orchestrator.run_stage` + `qpf run`/`qpf report`)
+and was re-confirmed end-to-end in this session via
+`qpf run --all --synthetic` + `qpf report` (mechanical regression check
+only, synthetic data, discarded afterward — never presented as real
+results). Running it against real data requires the real Bybit cache
+this sandbox cannot produce; see the chat response for the exact command
+and the ask to report back real results from the user's own environment.

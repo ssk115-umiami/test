@@ -140,6 +140,92 @@ def test_bybit_adapter_marks_verified_when_local_fixture_passes_sanity(tmp_path,
     assert status.verified is True
 
 
+def test_bybit_adapter_excludes_out_of_window_boundary_record(tmp_path, monkeypatch):
+    """Regression test for the Round 4 finding: a real one-day run
+    (start=end='2025-06-01') returned a record dated 2025-06-02, just
+    past midnight, embedded in that single day's archive file. load()
+    must now clip to the half-open window [start, end + 1 day) and
+    exclude it, rather than silently including an observation from the
+    day after the one requested."""
+    adapter = BybitPublicDataAdapter(
+        symbol="BTCUSDT",
+        market="spot",
+        start="2025-06-01",
+        end="2025-06-01",
+        cache_dir=tmp_path,
+        sampling_interval_ms=3_600_000,  # 1 hour, keeps this fixture small
+    )
+
+    trades_df = pd.DataFrame({"timestamp": [1748736000], "side": ["Buy"], "size": [1.0]})
+    _write_gz_csv(adapter.raw_trades_dir / "BTCUSDT_2025-06-01.csv.gz", trades_df)
+
+    base_ms = 1748736000000  # 2025-06-01 00:00:00 UTC
+    boundary_ms = base_ms + 24 * 3_600_000 + 1  # 2025-06-02 00:00:00.001 — just past the requested day
+    records = [
+        {"type": "snapshot", "ts": base_ms, "data": {"b": [["100.0", "5"]], "a": [["100.1", "5"]]}},
+        # A distinctive price (999.0) marks the boundary record so we can
+        # confirm it never surfaces in the output, not just that row
+        # counts changed.
+        {"type": "snapshot", "ts": boundary_ms, "data": {"b": [["999.0", "1"]], "a": [["999.1", "1"]]}},
+    ]
+    _write_orderbook_zip(adapter.raw_orderbook_dir / "2025-06-01_BTCUSDT_ob200.data.zip", records)
+
+    def fail_if_network_used(*args, **kwargs):
+        raise AssertionError("no network call should happen when local files are already present")
+
+    monkeypatch.setattr("project_factory.data.adapters.bybit_l2.httpx.get", fail_if_network_used)
+    monkeypatch.setattr("project_factory.data.adapters.bybit_l2.httpx.head", fail_if_network_used)
+
+    df = adapter.load()
+
+    assert df["timestamp"].max() < pd.Timestamp("2025-06-02")
+    assert not (df["bid_price_1"] == 999.0).any()
+    assert adapter._last_orderbook_diagnostics["n_rows_outside_requested_window"] >= 1
+
+
+def test_bybit_adapter_load_zero_fills_quiet_seconds_not_forward_fill(tmp_path, monkeypatch):
+    """Regression test for the Round 4 finding: merge_asof against the
+    SPARSE per-second trade aggregate silently forward-fills an earlier
+    trade's volume/count onto every later quiet second until the next
+    trade. With a single real trade at second 1 and order-book samples at
+    seconds 2, 4, and 5.5 (none of which is the trade's own second),
+    every one of those rows must report zero trade activity — under the
+    pre-fix behavior all three would have incorrectly inherited the
+    second-1 trade's volume/count."""
+    adapter = BybitPublicDataAdapter(
+        symbol="BTCUSDT",
+        market="spot",
+        start="2025-06-01",
+        end="2025-06-01",
+        cache_dir=tmp_path,
+        sampling_interval_ms=2000,
+    )
+
+    base_ts_s = 1748736000  # 2025-06-01 00:00:00 UTC
+    trades_df = pd.DataFrame({"timestamp": [base_ts_s + 1], "side": ["Buy"], "size": [7.0]})
+    _write_gz_csv(adapter.raw_trades_dir / "BTCUSDT_2025-06-01.csv.gz", trades_df)
+
+    base_ms = base_ts_s * 1000
+    records = [
+        {"type": "snapshot", "ts": base_ms, "data": {"b": [["100.0", "5"]], "a": [["100.1", "5"]]}},
+        {"type": "delta", "ts": base_ms + 2500, "data": {"b": [["100.0", "6"]], "a": []}},
+        {"type": "delta", "ts": base_ms + 5500, "data": {"b": [["100.0", "7"]], "a": []}},
+    ]
+    _write_orderbook_zip(adapter.raw_orderbook_dir / "2025-06-01_BTCUSDT_ob200.data.zip", records)
+
+    def fail_if_network_used(*args, **kwargs):
+        raise AssertionError("no network call should happen when local files are already present")
+
+    monkeypatch.setattr("project_factory.data.adapters.bybit_l2.httpx.get", fail_if_network_used)
+    monkeypatch.setattr("project_factory.data.adapters.bybit_l2.httpx.head", fail_if_network_used)
+
+    df = adapter.load()
+
+    assert len(df) == 3
+    assert (df["trade_signed_volume"] == 0.0).all()
+    assert (df["trade_count"] == 0.0).all()
+
+
 def test_verification_status_defaults_to_unverified(tmp_path):
     status = verification_status(tmp_path, "some_source")
     assert status.verified is False

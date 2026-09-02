@@ -11,6 +11,7 @@ import pytest
 from project_factory.data.adapters.bybit_l2 import (
     BybitPublicDataAdapter,
     _aggregate_trades_to_seconds,
+    _densify_trade_seconds,
     _LiveOrderBook,
     _orderbook_output_sanity,
     _reconstruct_and_sample_orderbook,
@@ -298,3 +299,33 @@ def test_check_connectivity_checks_both_trades_and_orderbook(monkeypatch):
 
     assert any("public.bybit.com" in u for u in checked_urls), "trades endpoint was not checked"
     assert any("quote-saver.bycsi.com" in u for u in checked_urls), "order-book endpoint was not checked"
+
+
+def test_densify_trade_seconds_fills_zero_not_forward_fill():
+    """Regression test for the Round 4 finding: the sparse per-second
+    output of _aggregate_trades_to_seconds only has rows for seconds that
+    actually had a trade. Reindexed onto a dense one-row-per-second grid,
+    every second in between must be an explicit 0.0 — not left missing
+    (which merge_asof(direction="backward") would silently fill with the
+    nearest PRIOR second's trade activity)."""
+    sparse = pd.DataFrame(
+        {
+            "timestamp": [pd.Timestamp("2025-06-01 00:00:00"), pd.Timestamp("2025-06-01 00:00:03")],
+            "trade_signed_volume": [5.0, -2.0],
+            "trade_count": [3, 1],
+        }
+    )
+    dense = _densify_trade_seconds(sparse, pd.Timestamp("2025-06-01 00:00:00"), pd.Timestamp("2025-06-01 00:00:04"))
+
+    assert len(dense) == 5  # seconds :00 through :04 inclusive
+    assert dense["trade_signed_volume"].tolist() == [5.0, 0.0, 0.0, -2.0, 0.0]
+    assert dense["trade_count"].tolist() == [3.0, 0.0, 0.0, 1.0, 0.0]
+
+
+def test_densify_trade_seconds_empty_input_returns_all_zero_grid():
+    empty = pd.DataFrame(columns=["timestamp", "trade_signed_volume", "trade_count"])
+    dense = _densify_trade_seconds(empty, pd.Timestamp("2025-06-01"), pd.Timestamp("2025-06-01 00:00:02"))
+
+    assert len(dense) == 3
+    assert (dense["trade_signed_volume"] == 0.0).all()
+    assert (dense["trade_count"] == 0.0).all()

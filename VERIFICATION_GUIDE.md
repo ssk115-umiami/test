@@ -4,10 +4,19 @@ Both real adapters (`BybitPublicDataAdapter`, `NyisoPowerDataAdapter`)
 were built from documentation cross-checked as carefully as this
 session's sandbox allowed (it blocks all exchange/vendor/government
 domains — see `IMPLEMENTATION_STATUS.md`). Real-data runs against Bybit
-have found and fixed three issues so far — an order-book 404 (Round 1), a
-trades schema mismatch (Round 2), and a catastrophic order-book
-under-sampling bug (Round 3, only 2 rows for a full day) — all in §1
-below. NYISO has not been run against live data yet.
+have found and fixed four issues so far — an order-book 404 (Round 1), a
+trades schema mismatch (Round 2), a catastrophic order-book
+under-sampling bug (Round 3, only 2 rows for a full day), and two
+data-integrity gaps found once a full real day parsed cleanly (Round 4:
+an archive-boundary record leaking past the requested date, and trade
+volume being forward-filled onto quiet seconds) — all in §1 below. NYISO
+has not been run against live data yet.
+
+**Bybit is now verified against real data** (Round 4: `(86401, 23)`
+before the Round 4 window fix, 1s median cadence, 430,315 records
+reconstructed, 0 sequence anomalies, 0 malformed records, 0 crossed
+books, 0 nonpositive sizes). Re-run §1's command to confirm shape is now
+`(86400, 23)` after the window fix.
 
 Nothing here should be read as a claim that either adapter works — that
 is precisely what these steps determine.
@@ -281,6 +290,62 @@ interval, bid<ask violation count, nonpositive-size count,
 `adapter._last_orderbook_diagnostics` (sequence-gap/reset counts), and
 the first/last 5 rows** — this is what confirms Round 3's fix against
 real data (this sandbox cannot reach Bybit to confirm it directly).
+
+### Round 4 finding (fixed): two data-integrity gaps in an otherwise-passing real run
+
+A real run confirmed the Round 3 reconstruction fix: `(86401, 23)`, 1s
+median cadence, 430,315 records reconstructed (2 snapshots / 430,313
+deltas), 0 sequence anomalies, 0 malformed records, 0 crossed books, 0
+nonpositive top-of-book sizes. Two follow-up integrity checks before
+model work, both confirmed as real bugs (not just unconfirmed
+assumptions) and fixed:
+
+1. **Half-open date window.** The extra row above (`86401` instead of
+   `86400`) was the same archive-boundary record from Round 3
+   (`2025-06-02 00:00:00.947`), still present because Round 3 only
+   explained it, it didn't exclude it. `load()` now clips the
+   concatenated order-book frame to the half-open interval `[start, end +
+   1 day)` — for `start=end="2025-06-01"` that's `[2025-06-01,
+   2025-06-02)`, which drops the boundary record. The number of rows
+   dropped this way is recorded in
+   `adapter._last_orderbook_diagnostics["n_rows_outside_requested_window"]`.
+2. **Trade volume was being forward-filled onto quiet seconds — a real
+   bug.** `_aggregate_trades_to_seconds` only emits a row for seconds
+   that actually had >=1 trade (a sparse frame). The old `load()` fed
+   that sparse frame straight into `merge_asof(direction="backward")`
+   against the order-book timestamps: for a quiet second with no trades
+   of its own, "the nearest prior row at or before this timestamp" in a
+   sparse frame is whatever earlier second last had activity — so its
+   volume/count got silently repeated on every quiet second up to the
+   next real trade, contaminating `trade_signed_volume`/`trade_count`
+   with stale activity. Fixed with a new `_densify_trade_seconds()` step:
+   reindex the sparse aggregate onto a continuous one-row-per-second grid
+   first (explicit `0.0`/`0.0` for every second with no trades), so the
+   subsequent asof match can only land on the current second's own
+   bucket. `trade_signed_volume` and `trade_count` were already computed
+   independently per second inside `_aggregate_trades_to_seconds` (two
+   separate `.agg()` columns — sum vs. count of the same signed-volume
+   series from one `groupby("timestamp")`) — that part needed no change;
+   only the merge onto quiet seconds was wrong.
+
+New regression tests: `test_densify_trade_seconds_fills_zero_not_forward_fill`,
+`test_densify_trade_seconds_empty_input_returns_all_zero_grid` (direct
+unit tests of the fix), and two adapter-level integration tests —
+`test_bybit_adapter_excludes_out_of_window_boundary_record` (a fixture
+with a record dated the day after `end`, confirming it's dropped and
+counted in the diagnostics) and
+`test_bybit_adapter_load_zero_fills_quiet_seconds_not_forward_fill` (a
+single real trade at second 1, three order-book samples at seconds 2, 4,
+and 5.5 — none of which is the trade's own second — all of which must
+report exactly zero trade activity; under the pre-fix code all three
+would have incorrectly inherited the second-1 trade's volume/count).
+**129/129 tests passing, ruff clean.**
+
+The one-day local verification command is unchanged (§1 above) — the
+expected shape is now exactly `(86400, 23)` (was `86401` before this
+fix), and `trade_signed_volume`/`trade_count` should read `0.0` for any
+second you spot-check that had no trades in the raw CSV, regardless of
+how recently a prior second had activity.
 
 ### Preserving a real fixture once this succeeds
 

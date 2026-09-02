@@ -171,6 +171,38 @@ the tail of one extra sample rather than requiring special handling.
 without exceptions — see `_orderbook_output_sanity` for the row-count/
 cadence/crossed-book/nonpositive-size checks that now gate it, which
 would have caught the 2-row result directly.
+
+--- ROUND 4: real verification passed (86,401 rows); two remaining data-integrity checks ---
+A real run against the Round 3 fix succeeded: `(86401, 23)`, 1s median
+cadence, 430,315 records reconstructed (2 snapshots / 430,313 deltas), 0
+sequence anomalies, 0 malformed records, 0 crossed books, 0 nonpositive
+top-of-book sizes. Two follow-up integrity checks before model work:
+
+1. **Half-open date window.** `load()` now clips the concatenated
+   order-book frame to `[start, end + 1 day)` (`pd.Timestamp(self.start)`
+   .. `pd.Timestamp(self.end) + pd.Timedelta(days=1)`, exclusive) after
+   concatenation, which is exactly what drops the ROUND 3 boundary record
+   (`2025-06-02 00:00:00.947`) from a `start=end="2025-06-01"` request —
+   86,401 rows becomes 86,400. Dropped-row count is recorded in
+   `_last_orderbook_diagnostics["n_rows_outside_requested_window"]`.
+2. **Trade aggregation was silently forward-filling, not zero-filling,
+   quiet seconds** — a real bug, not just an unconfirmed assumption.
+   `_aggregate_trades_to_seconds` only emits rows for seconds that
+   actually had >=1 trade (a sparse frame); the old code fed that sparse
+   frame directly into `merge_asof(direction="backward")`, which finds
+   the nearest PRIOR row at or before each order-book timestamp — for a
+   quiet second with no trades of its own, that "nearest prior row" is
+   whatever earlier second last had activity, so its volume/count got
+   silently repeated (forward-filled) onto every quiet second up to the
+   next trade. Fixed by `_densify_trade_seconds`: reindex the sparse
+   trade aggregate onto a continuous one-row-per-second grid first
+   (`0.0`/`0.0` for every second absent from the sparse frame), so the
+   subsequent asof match can only ever land on the current second's own
+   bucket. `trade_signed_volume`/`trade_count` are computed independently
+   per second in `_aggregate_trades_to_seconds` (separate `.agg()`
+   columns from the same groupby — sum vs. count of the same underlying
+   signed-volume series) — that part was already correct; only the
+   merge step onto quiet seconds was wrong.
 ===================================================================================
 """
 
@@ -641,8 +673,41 @@ class BybitPublicDataAdapter:
         # merge_asof requires matching dtypes on the join key.
         orderbook["timestamp"] = orderbook["timestamp"].astype("datetime64[ns]")
 
+        # Enforce the requested interval as half-open [start, end + 1 day):
+        # the raw per-day archive file can contain one boundary/closing
+        # record just past midnight (confirmed via _dates() — start==end
+        # fetches exactly one file, so this is an in-file record, not a
+        # date-range bug — see the ROUND 3 docstring section above). A
+        # request for exactly `start..end` should not silently include an
+        # observation dated the day after `end`.
+        window_start = pd.Timestamp(self.start)
+        window_end = pd.Timestamp(self.end) + pd.Timedelta(days=1)
+        n_before_window_clip = len(orderbook)
+        orderbook = orderbook[
+            (orderbook["timestamp"] >= window_start) & (orderbook["timestamp"] < window_end)
+        ].reset_index(drop=True)
+        combined_diag["n_rows_outside_requested_window"] = n_before_window_clip - len(orderbook)
+        self._last_orderbook_diagnostics = combined_diag
+
+        if orderbook.empty:
+            raise DataSourceQualityError(
+                f"no order-book rows remained for {self.symbol} inside the requested window "
+                f"[{window_start}, {window_end}) after clipping — check start/end"
+            )
+
         trade_agg = _aggregate_trades_to_seconds(trades)
         trade_agg["timestamp"] = trade_agg["timestamp"].astype("datetime64[ns]")
+        # trade_agg only has rows for seconds that actually had trades.
+        # merge_asof(direction="backward") against that SPARSE frame would
+        # find the nearest PRIOR second with trades and attribute its
+        # volume/count to every later second until the next trade —
+        # forward-filling stale activity onto quiet seconds instead of
+        # reporting zero. Densify onto a continuous one-row-per-second
+        # index first so every empty second is an explicit 0, then the
+        # asof match only ever picks up the current second's own bucket.
+        trade_agg = _densify_trade_seconds(
+            trade_agg, orderbook["timestamp"].min().floor("s"), orderbook["timestamp"].max().ceil("s")
+        )
         merged = pd.merge_asof(
             orderbook.sort_values("timestamp"),
             trade_agg.sort_values("timestamp"),
@@ -819,3 +884,38 @@ def _aggregate_trades_to_seconds(trades: pd.DataFrame) -> pd.DataFrame:
         trade_count=("signed_volume", "count"),
     ).reset_index()
     return agg
+
+
+def _densify_trade_seconds(trade_agg: pd.DataFrame, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
+    """Reindex the SPARSE per-second output of _aggregate_trades_to_seconds
+    (one row per second that actually had >=1 trade) onto a dense,
+    continuous one-row-per-second index spanning [start, end], filling
+    every second with no trades with 0.0 for both trade_signed_volume and
+    trade_count.
+
+    This exists specifically so a downstream merge_asof(direction=
+    "backward") against the trade side cannot forward-fill a quiet
+    second's row with the most recent PRIOR second that had trades: with
+    the sparse frame, that asof match would find whatever earlier second
+    last had activity and repeat its volume/count on every quiet second
+    up to the next trade — silently fabricating trade flow that never
+    happened. Once every second in range has an explicit row (0.0 where
+    quiet), the asof match can only ever land on the current second's own
+    (possibly-zero) bucket.
+    """
+    full_index = pd.date_range(start, end, freq="s", name="timestamp")
+    if trade_agg.empty:
+        return pd.DataFrame(
+            {
+                "timestamp": full_index,
+                "trade_signed_volume": 0.0,
+                "trade_count": 0.0,
+            }
+        )
+    dense = (
+        trade_agg.drop_duplicates(subset="timestamp", keep="last")
+        .set_index("timestamp")
+        .reindex(full_index, fill_value=0.0)
+        .reset_index()
+    )
+    return dense
