@@ -440,17 +440,66 @@ schema-accurate fixture test built field-for-field from that repo's own
 parser (`test_parse_orderbook_records_handles_full_confirmed_record_shape`).
 113/113 tests passing, ruff clean.
 
+## Round 2 real-data verification: Bybit trades schema mismatch
+
+Verification progressed past the Round 1 fix and reached real trades
+data — and hit `DataSourceSchemaError: could not find side/size columns
+in trades data`. Actual observed columns:
+`['id', 'timestamp', 'price', 'volume', 'side', 'rpi']`. Root-caused by
+cloning **`github.com/bybit-exchange/docs`** — Bybit's own official API
+docs source repo — and reading `docs/v5/market/recent-trade.mdx`
+directly, rather than blindly renaming `size` to `volume`:
+
+- `volume` = the archived CSV's name for the live API's `size` field,
+  confirmed denominated in the **base asset** (that doc's own example:
+  price=16618.49, size=0.00012 → ~$2 notional, only sensible in base
+  units) — added to the accepted size-column names.
+- `side` confirmed to hold exactly `Buy`/`Sell`, documented as "side of
+  **taker**" (the aggressor) — confirms the existing sign convention
+  (Buy=+size, Sell=-size) needed no change. Unrecognized values now
+  raise `DataSourceSchemaError` naming them, rather than silently
+  contributing zero.
+- `rpi` (archived name for `isRPITrade`, Bybit's Retail Price
+  Improvement liquidity program, Feb 2025) confirmed unrelated to
+  direction/size — safely ignored, not treated as an error.
+- `id` (archived name for `execId`) — an identifier, unused.
+- Timestamp units were not directly confirmed for the archived CSV's
+  `timestamp` column specifically (a different field name than the live
+  API's `time`) — `_parse_trade_timestamps` now infers seconds vs.
+  milliseconds vs. microseconds from magnitude instead of assuming, and
+  raises rather than silently mis-parsing an implausible value. All
+  Bybit timestamps are UTC (exchange-wide convention).
+
+New regression tests:
+`test_aggregate_trades_to_seconds_matches_real_observed_bybit_schema`
+(uses the exact real observed column set),
+`test_aggregate_trades_to_seconds_raises_on_unrecognized_side_value`,
+`test_parse_trade_timestamps_infers_seconds_vs_milliseconds`,
+`test_parse_trade_timestamps_raises_on_implausible_magnitude`.
+117/117 tests passing, ruff clean.
+
+Also documented (module docstring, "RAW FILES ARE NEVER DELETED"): every
+real fetch already writes its raw bytes to `raw_trades_dir`/
+`raw_orderbook_dir` with Bybit's own filenames before any parsing, and
+nothing removes them — once §1 of the verification guide succeeds, those
+exact files can be copied into `tests/fixtures/` for a real (not
+schema-accurate-but-constructed) test fixture. See
+`VERIFICATION_GUIDE.md` §1 for the exact commands.
+
 `NyisoPowerDataAdapter` has not yet been run against live data — still
 fully unverified.
 
 ## Blockers
 
-- Milestones 1-4 complete and tested (113/113). One open item, needing
-  an environment with normal internet access (this sandbox blocks it):
-  verify `NyisoPowerDataAdapter` against live NYISO data, and confirm
-  `BybitPublicDataAdapter`'s Round 1 fix actually resolves the 404 (the
-  fix is grounded in reading real downloader source code, but has not
-  itself been re-run against live Bybit data from this session).
+- Milestones 1-4 complete and tested (117/117). Two open items, both
+  needing an environment with normal internet access (this sandbox
+  blocks it):
+  1. Verify `NyisoPowerDataAdapter` against live NYISO data (not yet
+     attempted).
+  2. Confirm the Round 2 trades-schema fix actually produces a
+     successful end-to-end `load()` for `BybitPublicDataAdapter` (the
+     fix is grounded in Bybit's own official docs, but has not itself
+     been re-run against live data from this session).
 - See the companion verification guide for exact commands, expected
   schemas, and how to read each adapter's failure modes.
 
@@ -458,11 +507,11 @@ fully unverified.
 
 ```bash
 source .venv/bin/activate
-pytest tests/ -v   # confirm Milestones 1-4 + the Bybit fix still green (113/113)
+pytest tests/ -v   # confirm Milestones 1-4 + both Bybit fixes still green (117/117)
 ```
 
 Then, outside this sandbox: re-run the Bybit verification sequence to
-confirm the fix, then the NYISO sequence for the first time (both in
+confirm the Round 2 fix, then the NYISO sequence for the first time (both in
 `VERIFICATION_GUIDE.md`). Once both show `verified: true`, the natural
 next steps are the packaging / interview-mastery pass (section 13, hours
 36-48) and, if desired, extending either archetype (Bybit delta-record

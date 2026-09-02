@@ -3,9 +3,10 @@
 Both real adapters (`BybitPublicDataAdapter`, `NyisoPowerDataAdapter`)
 were built from documentation cross-checked as carefully as this
 session's sandbox allowed (it blocks all exchange/vendor/government
-domains — see `IMPLEMENTATION_STATUS.md`). A first real-data run against
-Bybit found a live 404 — see "Round 1 finding" at the end of §1 for the
-root cause and fix. NYISO has not been run against live data yet.
+domains — see `IMPLEMENTATION_STATUS.md`). Real-data runs against Bybit
+have found and fixed two issues so far — an order-book 404 (Round 1) and
+a trades schema mismatch (Round 2), both in §1 below. NYISO has not been
+run against live data yet.
 
 Nothing here should be read as a claim that either adapter works — that
 is precisely what these steps determine.
@@ -92,6 +93,89 @@ it now checks both endpoints independently and names which one failed.
 The JSONL record schema itself (see §3) needed **no change** — it was
 already correct; confirmed against that same repo's `convert_to_parquet.py`
 parser. Full detail in `bybit_l2.py`'s module docstring.
+
+### Round 2 finding (fixed): trades `DataSourceSchemaError`
+
+Verification progressed past Round 1 and reached real trades data, which
+failed with `could not find side/size columns in trades data` against
+the actual observed columns `['id', 'timestamp', 'price', 'volume',
+'side', 'rpi']`. Root-caused by cloning
+**`github.com/bybit-exchange/docs`** — Bybit's own official API docs
+source repo, not a third party — and reading
+`docs/v5/market/recent-trade.mdx` directly:
+
+- **`volume` is the size column** (the archived CSV's name for what the
+  live API calls `size`) — now accepted alongside `size`/`qty`/`quantity`.
+  Confirmed **denominated in the base asset** (BTC for BTCUSDT) by that
+  doc's own worked example (price=16618.49, size=0.00012 → ~$2 notional,
+  only sensible in base units).
+- **`side` values are exactly `Buy`/`Sell`**, documented as *"Side of
+  taker"* (the aggressor) — this confirms the existing sign convention
+  (`Buy` = **+size**, `Sell` = **-size**, i.e. positive signed volume =
+  net aggressive buying pressure) was already correct. Unrecognized
+  values now raise `DataSourceSchemaError` naming them, instead of
+  silently contributing zero.
+- **`rpi`** is the archived name for the live API's `isRPITrade` — a
+  flag for Bybit's Retail Price Improvement liquidity program (Feb
+  2025), unrelated to direction or size. **Safely ignored** — confirmed
+  by the docs, not assumed.
+- **`id`** is the archived name for `execId`, an identifier, unused here.
+- **Timestamp units** were not directly confirmed for the archived
+  CSV's `timestamp` column specifically (the live API's own field is
+  named `time`, in milliseconds — a different name, so not guaranteed
+  to share the convention). `_parse_trade_timestamps` now infers
+  seconds/milliseconds/microseconds from magnitude rather than assuming,
+  and raises `DataSourceSchemaError` on an implausible magnitude instead
+  of silently mis-parsing. All Bybit timestamps are UTC (exchange-wide
+  convention).
+
+**Updated one-day local verification command** (same as before, dates
+already reflect Round 1's fix — re-run this to confirm Round 2):
+
+```bash
+source .venv/bin/activate
+
+python -c "
+from project_factory.data.adapters.bybit_l2 import BybitPublicDataAdapter
+
+adapter = BybitPublicDataAdapter(
+    symbol='BTCUSDT',
+    market='spot',
+    start='2025-06-01',
+    end='2025-06-01',
+)
+adapter.check_connectivity()
+print('connectivity OK')
+
+df = adapter.load()
+print(df.shape)
+print(df.columns.tolist())
+print(df.head())
+
+report = adapter.validate(df)
+print(report.model_dump())
+"
+```
+
+### Preserving a real fixture once this succeeds
+
+Every real network fetch writes its raw bytes to
+`adapter.raw_trades_dir` (`data_cache/bybit_l2/raw/trades/`) and
+`adapter.raw_orderbook_dir` (`data_cache/bybit_l2/raw/orderbook/`)
+**before** any parsing, using Bybit's own filenames, and nothing in the
+adapter ever deletes them. Once §1's command succeeds:
+
+```bash
+mkdir -p tests/fixtures/bybit
+cp data_cache/bybit_l2/raw/trades/BTCUSDT_2025-06-01.csv.gz tests/fixtures/bybit/
+cp data_cache/bybit_l2/raw/orderbook/2025-06-01_BTCUSDT_ob200.data.zip tests/fixtures/bybit/
+```
+
+Those two files are real, byte-for-byte Bybit data — a stronger fixture
+than the schema-accurate-but-constructed ones currently in
+`tests/test_bybit_adapter_parsing.py`. Point a new test at them directly
+(read + gunzip / read + unzip, then call `_parse_trades_csv_gz` /
+`_parse_orderbook_zip` on the path) once you've copied them in.
 
 ---
 

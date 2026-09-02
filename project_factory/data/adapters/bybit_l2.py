@@ -4,14 +4,15 @@ archive (Archetype B: predictive market making).
 ============================== VERIFICATION STATUS ==============================
 This session's sandbox blocks every exchange/vendor/government domain, so
 none of this has been confirmed by an HTTP round trip from inside it (see
-IMPLEMENTATION_STATUS.md). A real run against this adapter (2026-09) DID
-hit a live 404 on the order-book URL this docstring previously
-documented — that report is what triggered the fix below. Per Gate 9,
-still do NOT treat this as validated: `verification_status(...)` reports
-`verified=False` until a real `load()` has actually succeeded in your
-environment.
+IMPLEMENTATION_STATUS.md). Real runs against this adapter (2026-09) have
+found two live issues so far — an order-book 404 (Round 1) and a trades
+schema mismatch (Round 2) — both fixed below, each root-caused from the
+actual failure rather than re-guessed. Per Gate 9, still do NOT treat
+this as validated: `verification_status(...)` reports `verified=False`
+until a real `load()` has actually succeeded end-to-end (both trades and
+order-book) in your environment.
 
-**What changed and why (root-caused from the 404, not re-guessed):**
+--- ROUND 1: order-book HTTP 404 ---
 Cloned `github.com/nssanta/Bybit-Download-OrderBook-Trades-Klines`
 (a maintained, currently-referenced Bybit downloader) directly and read
 its source + README end to end — this is the strongest evidence used for
@@ -54,6 +55,37 @@ availability table, not a search-engine snippet:
 `check_connectivity()` now checks BOTH the trades and order-book URLs
 independently — it previously only checked trades, which is exactly how
 a broken order-book URL passed connectivity but failed on load().
+
+--- ROUND 2: trades schema mismatch ---
+Verification progressed past the Round 1 fix and reached real trades
+data, which has columns `['id', 'timestamp', 'price', 'volume', 'side',
+'rpi']` — this adapter previously only recognized `size`/`qty`/`quantity`
+for the trade-size column, not `volume`, so it raised `DataSourceSchemaError`.
+Cloned `github.com/bybit-exchange/docs` (Bybit's own official API docs
+source repo, not a third party) and read `docs/v5/market/recent-trade.mdx`
+directly to confirm the real semantics rather than blindly renaming a
+column:
+  - `volume` is the archived CSV's name for what the live V5 API calls
+    `size` — "Trade size", confirmed denominated in the BASE asset (e.g.
+    BTC for BTCUSDT) by that doc's own worked example
+    (price=16618.49, size=0.00012 -> ~$2 notional, only sensible in base
+    units; also the universal price*size=notional convention).
+  - `side` holds exactly `Buy`/`Sell` and is documented as "Side of
+    taker" (the aggressor) — confirms the existing sign convention
+    (Buy=+size, Sell=-size = net aggressive buying pressure) was already
+    correct; only the size-column name needed to change.
+  - `rpi` is the archived CSV's name for the live API's `isRPITrade` — a
+    flag for Bybit's Retail Price Improvement liquidity program
+    (introduced Feb 2025), unrelated to trade direction or size. Safely
+    ignored (never referenced) rather than treated as an error.
+  - `id` is the archived name for `execId`, an identifier not used here.
+  - Timestamp units were not directly confirmed for the archived CSV
+    specifically (its column is named `timestamp`, not the live API's
+    `time`, so the same convention isn't guaranteed) — `_parse_trade_timestamps`
+    now infers seconds vs. milliseconds vs. microseconds from magnitude
+    instead of assuming, and raises `DataSourceSchemaError` rather than
+    silently mis-parsing if the magnitude is implausible. All Bybit
+    timestamps are UTC (exchange-wide convention; not tz-converted here).
 ===================================================================================
 
 LOCAL-FILE INGESTION: fetch()/load() check `cache_dir/raw/trades/` and
@@ -65,6 +97,16 @@ download normally, or download the files yourself (browser, curl,
 Bybit's own bulk tools) and drop them into those two directories with
 their original names — either way the rest of the pipeline
 (features/models/trading) runs completely unmodified.
+
+RAW FILES ARE NEVER DELETED: every real network fetch writes its raw
+`.csv.gz` / `.data.zip` bytes to `adapter.raw_trades_dir` /
+`adapter.raw_orderbook_dir` (via `fetch_bytes_with_local_fallback`)
+before any parsing happens, and nothing in this module ever removes
+them afterward. So once `load()` succeeds once against real data, those
+exact downloaded files sit on disk with Bybit's own original filenames —
+copy any of them straight into `tests/fixtures/` for a byte-for-byte
+real-data test fixture (stronger than the schema-accurate-but-synthetic
+fixtures currently in tests/test_bybit_adapter_parsing.py).
 """
 
 from __future__ import annotations
@@ -342,25 +384,102 @@ def _parse_orderbook_records(records: list[dict], depth: int) -> pd.DataFrame:
     return pd.DataFrame(rows).dropna(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
 
 
+def _parse_trade_timestamps(raw: pd.Series) -> pd.Series:
+    """Bybit's archived trades CSV timestamp column has been observed
+    (real download, 2026) as a bare numeric epoch with no unit marker in
+    the header, so the unit has to be inferred from magnitude rather than
+    assumed — guessing wrong silently produces plausible-looking but
+    wrong dates instead of an error. Epoch magnitudes don't overlap:
+    seconds since epoch are ~1.7e9 (as of 2025), milliseconds ~1.7e12,
+    microseconds ~1.7e15 for the same real instant, each ~1000x apart.
+    Bybit's live V5 API documents "time" in milliseconds (bybit-exchange/docs,
+    v5/market/recent-trade.mdx), so milliseconds is the expected case;
+    this still checks rather than assumes, since the archived CSV's own
+    field is named "timestamp", not "time", and may not share that
+    convention. All Bybit timestamps are UTC (exchange-wide convention);
+    values are returned as naive UTC to match how the rest of this
+    pipeline treats timestamps."""
+    numeric = pd.to_numeric(raw, errors="coerce")
+    magnitude = numeric.abs().median()
+
+    if pd.isna(magnitude):
+        return pd.to_datetime(raw, errors="coerce", utc=True).dt.tz_localize(None)
+    if magnitude >= 1e17:
+        unit = "ns"
+    elif magnitude >= 1e14:
+        unit = "us"
+    elif magnitude >= 1e11:
+        unit = "ms"
+    elif magnitude >= 1e8:
+        unit = "s"
+    else:
+        raise DataSourceSchemaError(
+            f"trade timestamp column has an implausible epoch magnitude ({magnitude!r}) — "
+            f"not clearly seconds/ms/us/ns since 2001; verify the column against a raw "
+            f"downloaded file rather than trusting this heuristic blindly"
+        )
+    return pd.to_datetime(numeric, unit=unit, errors="coerce", utc=True).dt.tz_localize(None)
+
+
 def _aggregate_trades_to_seconds(trades: pd.DataFrame) -> pd.DataFrame:
+    """Aggregate raw trade prints into 1-second signed-volume/count
+    buckets for merge_asof onto order-book snapshots.
+
+    Column mapping confirmed against a real downloaded Bybit trades CSV
+    (2026) with columns ['id', 'timestamp', 'price', 'volume', 'side',
+    'rpi'], cross-checked against Bybit's official V5 API docs
+    (bybit-exchange/docs, v5/market/recent-trade.mdx — the archived CSV
+    uses different column names than the live REST API's JSON, but the
+    same underlying fields):
+
+      - 'volume' is the trade size (the archived CSV's name for what the
+        live API calls 'size'). Per that doc's own worked example
+        (price=16618.49, size=0.00012 for BTCUSDT — ~$2 notional, only
+        plausible if size is BASE-asset units), 'volume'/'size' is
+        denominated in the BASE asset (BTC for BTCUSDT), not quote/USDT.
+        This is also the universal exchange convention: notional =
+        price * size only makes sense in base units.
+      - 'side' holds exactly 'Buy'/'Sell' (that capitalization; matched
+        case-insensitively here regardless), and per the same doc is
+        explicitly "Side of taker" — i.e. the aggressor's side. Buy =
+        buyer-initiated (a market/aggressive buy order hit a resting
+        ask) -> the standard signed-volume convention used throughout
+        this codebase's features is +size for Buy, -size for Sell (net
+        positive signed volume = net aggressive buying pressure).
+      - 'rpi' (the archived CSV's compact name for the live API's
+        'isRPITrade') flags whether the trade executed against a Retail
+        Price Improvement maker order (a Bybit liquidity-provision
+        program, introduced Feb 2025 — see Bybit's RPI order
+        documentation). This is a liquidity/execution-type attribute,
+        orthogonal to trade direction; it does NOT change how size or
+        side should be interpreted and is safely ignored here (not
+        referenced at all, rather than erroring on its presence).
+      - 'id' is the execution/trade ID (archived CSV's name for the live
+        API's 'execId') — an identifier, not used in this aggregation.
+    """
     if trades.empty:
         return pd.DataFrame(columns=["timestamp", "trade_signed_volume", "trade_count"])
 
     ts_col = next((c for c in trades.columns if c.lower() in {"timestamp", "time"}), trades.columns[0])
     side_col = next((c for c in trades.columns if c.lower() == "side"), None)
-    size_col = next((c for c in trades.columns if c.lower() in {"size", "qty", "quantity"}), None)
+    size_col = next((c for c in trades.columns if c.lower() in {"size", "qty", "quantity", "volume"}), None)
     if side_col is None or size_col is None:
         raise DataSourceSchemaError(
             f"could not find side/size columns in trades data (columns: {list(trades.columns)}) — "
-            f"the assumed Bybit trades CSV schema was not independently verified, see module docstring"
+            f"expected a 'side' column and one of size/qty/quantity/volume, see "
+            f"_aggregate_trades_to_seconds's docstring for the confirmed real schema"
         )
 
-    ts = pd.to_datetime(trades[ts_col], unit="s", errors="coerce")
-    if ts.isna().all():
-        ts = pd.to_datetime(trades[ts_col], errors="coerce")
+    ts = _parse_trade_timestamps(trades[ts_col])
 
-    sign = trades[side_col].astype(str).str.lower().map({"buy": 1.0, "sell": -1.0}).fillna(0.0)
-    signed_volume = sign * trades[size_col].astype(float)
+    sign = trades[side_col].astype(str).str.lower().map({"buy": 1.0, "sell": -1.0})
+    unrecognized = sign.isna() & trades[side_col].notna()
+    if unrecognized.any():
+        raise DataSourceSchemaError(
+            f"unrecognized values in {side_col!r}: {sorted(trades.loc[unrecognized, side_col].unique())!r} "
+            f"— expected only 'Buy'/'Sell' (case-insensitive); the schema may have changed again"
+        )
+    signed_volume = sign.fillna(0.0) * trades[size_col].astype(float)
 
     df = pd.DataFrame({"timestamp": ts.dt.floor("s"), "signed_volume": signed_volume})
     agg = df.groupby("timestamp").agg(

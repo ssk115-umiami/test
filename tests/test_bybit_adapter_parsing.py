@@ -125,6 +125,64 @@ def test_aggregate_trades_to_seconds_handles_empty_input():
     assert agg.empty
 
 
+def test_aggregate_trades_to_seconds_matches_real_observed_bybit_schema():
+    """Regression test for the real schema mismatch found in verification:
+    a real downloaded Bybit trades CSV has columns
+    ['id', 'timestamp', 'price', 'volume', 'side', 'rpi'] — 'volume'
+    (not 'size'), plus 'id' and 'rpi' which must be safely ignored.
+    Timestamps here use millisecond-epoch magnitude (~1.7e12), matching
+    Bybit's documented V5 API convention (see
+    _parse_trade_timestamps's docstring) — three trades in the same
+    millisecond-truncated-to-second bucket, one in the next."""
+    trades = pd.DataFrame(
+        {
+            "id": ["2100000000007764263", "2100000000007764264", "2100000000007764265", "2100000000007764266"],
+            "timestamp": [1748736000100, 1748736000400, 1748736000900, 1748736001200],
+            "price": [67420.10, 67419.90, 67420.50, 67421.00],
+            "volume": [0.00012, 0.00050, 0.00030, 0.00100],
+            "side": ["Buy", "Sell", "Buy", "Buy"],
+            "rpi": [True, False, True, False],
+        }
+    )
+
+    agg = _aggregate_trades_to_seconds(trades)
+
+    assert len(agg) == 2  # two distinct 1-second buckets after flooring
+    first_bucket = agg.iloc[0]
+    assert first_bucket["timestamp"] == pd.Timestamp("2025-06-01 00:00:00")
+    assert first_bucket["trade_count"] == 3
+    assert first_bucket["trade_signed_volume"] == pytest.approx(0.00012 - 0.00050 + 0.00030)
+
+    second_bucket = agg.iloc[1]
+    assert second_bucket["trade_count"] == 1
+    assert second_bucket["trade_signed_volume"] == pytest.approx(0.00100)
+
+
+def test_aggregate_trades_to_seconds_raises_on_unrecognized_side_value():
+    trades = pd.DataFrame(
+        {"timestamp": [1748736000100, 1748736000200], "side": ["Buy", "Unknown"], "volume": [1.0, 2.0]}
+    )
+    with pytest.raises(DataSourceSchemaError, match="Unknown"):
+        _aggregate_trades_to_seconds(trades)
+
+
+def test_parse_trade_timestamps_infers_seconds_vs_milliseconds():
+    from project_factory.data.adapters.bybit_l2 import _parse_trade_timestamps
+
+    seconds = _parse_trade_timestamps(pd.Series([1748736000.1, 1748736001.2]))
+    assert abs(seconds.iloc[0] - pd.Timestamp("2025-06-01 00:00:00.1")) < pd.Timedelta(milliseconds=1)
+
+    millis = _parse_trade_timestamps(pd.Series([1748736000100, 1748736001200]))
+    assert millis.iloc[0] == pd.Timestamp("2025-06-01 00:00:00.1")
+
+
+def test_parse_trade_timestamps_raises_on_implausible_magnitude():
+    from project_factory.data.adapters.bybit_l2 import _parse_trade_timestamps
+
+    with pytest.raises(DataSourceSchemaError, match="implausible"):
+        _parse_trade_timestamps(pd.Series([1, 2, 3]))
+
+
 def test_orderbook_url_includes_market_segment():
     """Regression test for the real 404 hit in verification: the
     order-book URL must include the market-type segment ("spot"/
