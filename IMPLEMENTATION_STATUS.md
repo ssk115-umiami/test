@@ -403,29 +403,69 @@ power's model ladder with zero changes), the experiment recorder, the
 data-quality/verification machinery, the CLI, the reporter's figures/
 table generation — worked for `power_da_rt` completely unchanged.
 
+## Round 1 real-data verification: Bybit fixed after a live 404
+
+A real run against `BybitPublicDataAdapter` (outside this sandbox)
+reported connectivity OK but `HTTP 404` on the order-book URL. Root-
+caused by cloning and reading
+`github.com/nssanta/Bybit-Download-OrderBook-Trades-Klines`'s actual
+downloader source + README directly (via `raw.githubusercontent.com`
+and a shallow clone, both reachable in this sandbox) rather than
+re-guessing from search snippets — two real bugs, both fixed:
+
+1. The order-book URL was missing a market-type path segment
+   (`.../orderbook/spot/{SYMBOL}/...`, not `.../orderbook/{SYMBOL}/...`).
+2. The adapter's default date range predated Bybit's order-book archive
+   entirely — that archive only exists from **May 2025** onward (trades
+   goes back to 2020, which is why that half worked). Defaults are now
+   inside the confirmed window, and the constructor raises a clear
+   `ValueError` for an out-of-window `start` instead of a confusing 404.
+
+Also fixed: `check_connectivity()` previously checked only the trades
+endpoint (different host than order-book) — exactly how a broken
+order-book URL passed connectivity and only failed at `load()`. It now
+checks both independently.
+
+Confirmed unchanged and NOT the cause: the JSONL record schema/parsing
+logic (`_parse_orderbook_records`), and the trades URLs. Full detail,
+including exact depth (200 levels, kept to top 5) and frequency (~200ms
+snapshots) confirmed from the same source, is in `bybit_l2.py`'s module
+docstring and `VERIFICATION_GUIDE.md` §1.
+
+New regression tests: `test_orderbook_url_includes_market_segment`,
+`test_orderbook_url_futures_uses_linear_segment`,
+`test_start_date_before_orderbook_availability_window_raises`,
+`test_check_connectivity_checks_both_trades_and_orderbook`, plus a
+schema-accurate fixture test built field-for-field from that repo's own
+parser (`test_parse_orderbook_records_handles_full_confirmed_record_shape`).
+113/113 tests passing, ruff clean.
+
+`NyisoPowerDataAdapter` has not yet been run against live data — still
+fully unverified.
+
 ## Blockers
 
-- Milestones 1-4 complete and tested (106/106). Two open items, both
-  needing an environment with normal internet access (this sandbox
-  blocks them):
-  1. Verify `BybitPublicDataAdapter` against live Bybit data.
-  2. Verify `NyisoPowerDataAdapter` against live NYISO data.
-- See the companion verification guide (delivered alongside this update)
-  for exact commands, expected schemas, and how to read each adapter's
-  failure modes.
+- Milestones 1-4 complete and tested (113/113). One open item, needing
+  an environment with normal internet access (this sandbox blocks it):
+  verify `NyisoPowerDataAdapter` against live NYISO data, and confirm
+  `BybitPublicDataAdapter`'s Round 1 fix actually resolves the 404 (the
+  fix is grounded in reading real downloader source code, but has not
+  itself been re-run against live Bybit data from this session).
+- See the companion verification guide for exact commands, expected
+  schemas, and how to read each adapter's failure modes.
 
 ## Next command to run
 
 ```bash
 source .venv/bin/activate
-pytest tests/ -v   # confirm Milestones 1-4 still green (106/106) before touching real data
+pytest tests/ -v   # confirm Milestones 1-4 + the Bybit fix still green (113/113)
 ```
 
-Then, outside this sandbox: run the two real-data verification
-sequences (Bybit, then NYISO) from the companion guide. Once both show
-`verified: true`, the natural next steps are the packaging / interview-
-mastery pass (section 13, hours 36-48) and, if desired, extending either
-archetype (Bybit delta-record book reconstruction; NYISO comparison-zone
-spread features; a weather data source for the power archetype) — but
-per instruction, this session stops here until the real-data paths are
-validated.
+Then, outside this sandbox: re-run the Bybit verification sequence to
+confirm the fix, then the NYISO sequence for the first time (both in
+`VERIFICATION_GUIDE.md`). Once both show `verified: true`, the natural
+next steps are the packaging / interview-mastery pass (section 13, hours
+36-48) and, if desired, extending either archetype (Bybit delta-record
+book reconstruction; NYISO comparison-zone spread features; a weather
+data source for the power archetype) — but per instruction, this session
+stops here until the real-data paths are validated.

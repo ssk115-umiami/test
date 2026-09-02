@@ -8,8 +8,50 @@ documented shape.
 import pandas as pd
 import pytest
 
-from project_factory.data.adapters.bybit_l2 import _aggregate_trades_to_seconds, _parse_orderbook_records
+from project_factory.data.adapters.bybit_l2 import (
+    BybitPublicDataAdapter,
+    _aggregate_trades_to_seconds,
+    _parse_orderbook_records,
+)
 from project_factory.data.errors import DataSourceSchemaError
+
+
+def test_parse_orderbook_records_handles_full_confirmed_record_shape():
+    """This fixture uses every field in the schema confirmed by directly
+    reading github.com/nssanta/Bybit-Download-OrderBook-Trades-Klines's
+    convert_to_parquet.py `parse_record()` (cloned and inspected, not
+    guessed): top-level `ts`, `cts`, `type`; nested `data.u`, `data.seq`,
+    `data.b`, `data.a`. This is the closest available substitute for a
+    live-captured file in this sandbox (network access to Bybit is
+    blocked here) — it is schema-accurate against that source's own
+    parser, not a byte-for-byte real download. `cts`/`u`/`seq` are
+    present (as real records have them) but unused by this adapter."""
+    records = [
+        {
+            "ts": 1748736000123,
+            "cts": 1748736000100,
+            "type": "snapshot",
+            "data": {
+                "u": 123456789,
+                "seq": 987654321,
+                "b": [["67420.10", "0.842"], ["67419.90", "1.204"]],
+                "a": [["67420.20", "0.512"], ["67420.30", "2.001"]],
+            },
+        },
+        {
+            "ts": 1748736000323,
+            "cts": 1748736000300,
+            "type": "delta",
+            "data": {"u": 123456790, "seq": 987654322, "b": [["67419.90", "0.900"]], "a": []},
+        },
+    ]
+
+    df = _parse_orderbook_records(records, depth=200)
+
+    assert len(df) == 1  # only the snapshot
+    assert df["bid_price_1"].iloc[0] == pytest.approx(67420.10)
+    assert df["bid_size_1"].iloc[0] == pytest.approx(0.842)
+    assert df["ask_price_1"].iloc[0] == pytest.approx(67420.20)
 
 
 def test_parse_orderbook_records_extracts_snapshot_only():
@@ -81,3 +123,58 @@ def test_aggregate_trades_to_seconds_handles_empty_input():
     empty = pd.DataFrame(columns=["timestamp", "side", "size"])
     agg = _aggregate_trades_to_seconds(empty)
     assert agg.empty
+
+
+def test_orderbook_url_includes_market_segment():
+    """Regression test for the real 404 hit in verification: the
+    order-book URL must include the market-type segment ("spot"/
+    "linear"), confirmed via github.com/nssanta/Bybit-Download-OrderBook-Trades-Klines
+    source — see module docstring."""
+    adapter = BybitPublicDataAdapter(symbol="BTCUSDT", market="spot", start="2025-06-01", end="2025-06-01")
+    url = adapter._orderbook_url(pd.Timestamp("2025-06-01"))
+    assert url == "https://quote-saver.bycsi.com/orderbook/spot/BTCUSDT/2025-06-01_BTCUSDT_ob200.data.zip"
+
+
+def test_orderbook_url_futures_uses_linear_segment():
+    adapter = BybitPublicDataAdapter(symbol="BTCUSDT", market="futures", start="2025-06-01", end="2025-06-01")
+    url = adapter._orderbook_url(pd.Timestamp("2025-06-01"))
+    assert "/orderbook/linear/BTCUSDT/" in url
+
+
+def test_trades_url_unaffected_by_orderbook_fix():
+    """Trades URLs were not part of the reported failure — confirm they
+    stayed exactly as before."""
+    adapter = BybitPublicDataAdapter(symbol="BTCUSDT", market="spot", start="2025-06-01", end="2025-06-01")
+    url = adapter._trades_url(pd.Timestamp("2025-06-01"))
+    assert url == "https://public.bybit.com/spot/BTCUSDT/BTCUSDT_2025-06-01.csv.gz"
+
+
+def test_start_date_before_orderbook_availability_window_raises():
+    with pytest.raises(ValueError, match="2025-05-01"):
+        BybitPublicDataAdapter(symbol="BTCUSDT", start="2024-06-01", end="2024-06-02")
+
+
+def test_start_date_within_window_does_not_raise():
+    BybitPublicDataAdapter(symbol="BTCUSDT", start="2025-05-01", end="2025-05-02")  # no raise
+
+
+def test_check_connectivity_checks_both_trades_and_orderbook(monkeypatch):
+    """Regression test for the actual failure mode reported: connectivity
+    previously only checked the trades endpoint, so a broken order-book
+    URL silently passed connectivity and only failed later at load()."""
+    checked_urls = []
+
+    class FakeResponse:
+        status_code = 200
+
+    def fake_head(url, **kwargs):
+        checked_urls.append(url)
+        return FakeResponse()
+
+    monkeypatch.setattr("project_factory.data.adapters.bybit_l2.httpx.head", fake_head)
+
+    adapter = BybitPublicDataAdapter(symbol="BTCUSDT", start="2025-06-01", end="2025-06-01")
+    adapter.check_connectivity()
+
+    assert any("public.bybit.com" in u for u in checked_urls), "trades endpoint was not checked"
+    assert any("quote-saver.bycsi.com" in u for u in checked_urls), "order-book endpoint was not checked"

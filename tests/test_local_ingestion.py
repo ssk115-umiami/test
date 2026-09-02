@@ -64,14 +64,14 @@ def test_bybit_adapter_uses_manually_dropped_local_files_without_network(tmp_pat
     into the adapter's raw directories, and load() uses them directly —
     no network call, no renaming, no research-code change."""
     adapter = BybitPublicDataAdapter(
-        symbol="BTCUSDT", market="spot", start="2024-06-01", end="2024-06-01", cache_dir=tmp_path
+        symbol="BTCUSDT", market="spot", start="2025-06-01", end="2025-06-01", cache_dir=tmp_path
     )
 
-    trades_df = pd.DataFrame({"timestamp": [1717200000, 1717200001], "side": ["Buy", "Sell"], "size": [1.0, 2.0]})
-    _write_gz_csv(adapter.raw_trades_dir / "BTCUSDT_2024-06-01.csv.gz", trades_df)
+    trades_df = pd.DataFrame({"timestamp": [1748736000, 1748736001], "side": ["Buy", "Sell"], "size": [1.0, 2.0]})
+    _write_gz_csv(adapter.raw_trades_dir / "BTCUSDT_2025-06-01.csv.gz", trades_df)
 
-    records = [{"type": "snapshot", "ts": 1717200000000, "data": {"b": [["100.0", "5"]], "a": [["100.1", "5"]]}}]
-    _write_orderbook_zip(adapter.raw_orderbook_dir / "2024-06-01_BTCUSDT_ob200.data.zip", records)
+    records = [{"type": "snapshot", "ts": 1748736000000, "data": {"b": [["100.0", "5"]], "a": [["100.1", "5"]]}}]
+    _write_orderbook_zip(adapter.raw_orderbook_dir / "2025-06-01_BTCUSDT_ob200.data.zip", records)
 
     def fail_if_network_used(*args, **kwargs):
         raise AssertionError("no network call should happen when local files are already present")

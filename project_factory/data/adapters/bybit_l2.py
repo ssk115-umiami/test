@@ -2,52 +2,69 @@
 archive (Archetype B: predictive market making).
 
 ============================== VERIFICATION STATUS ==============================
-This session runs in a sandbox whose network egress policy blocks every
-exchange/vendor/government domain (public.bybit.com, quote-saver.bycsi.com,
-NYISO, EIA, Kaggle, Tardis, etc. all return connect_rejected) — see
-IMPLEMENTATION_STATUS.md. That means the URLs and parsing logic below were
-assembled from web-search-derived documentation (third-party downloader
-tool READMEs, a blog post's search snippet, cross-checked across two+
-independent sources where possible) rather than confirmed by an actual
-HTTP round trip in this session. Per Gate 9 ("never claim market data
-availability that was not verified"), do NOT treat this adapter as
-validated: `data.verification.verification_status(adapter.cache_dir, ...)`
-reports `verified=False` until a real fetch+load has actually succeeded
-in your environment (this happens automatically — `load()` calls
-`mark_verified` once it produces a schema-conformant, quality-passing
-frame from real downloads). Run `adapter.check_connectivity()` (or `qpf
-run --stage data`) in an environment with normal internet access before
-trusting anything else it returns, and expect to fix small format
-details (exact directory for the order-book archive, exact CSV column
-names) against a real downloaded file.
+This session's sandbox blocks every exchange/vendor/government domain, so
+none of this has been confirmed by an HTTP round trip from inside it (see
+IMPLEMENTATION_STATUS.md). A real run against this adapter (2026-09) DID
+hit a live 404 on the order-book URL this docstring previously
+documented — that report is what triggered the fix below. Per Gate 9,
+still do NOT treat this as validated: `verification_status(...)` reports
+`verified=False` until a real `load()` has actually succeeded in your
+environment.
 
-What's cross-confirmed by 2+ independent search results:
-  - Futures trades:  https://public.bybit.com/trading/{SYMBOL}/{SYMBOL}{YYYY-MM-DD}.csv.gz
-  - Spot trades:     https://public.bybit.com/spot/{SYMBOL}/{SYMBOL}_{YYYY-MM-DD}.csv.gz
-  - Order-book filename convention: {YYYY-MM-DD}_{SYMBOL}_ob{depth}.data.zip
-    (depth is 200 or 500), containing one .data file of JSONL snapshot +
-    delta records.
+**What changed and why (root-caused from the 404, not re-guessed):**
+Cloned `github.com/nssanta/Bybit-Download-OrderBook-Trades-Klines`
+(a maintained, currently-referenced Bybit downloader) directly and read
+its source + README end to end — this is the strongest evidence used for
+this adapter so far, since it's executable code + an explicit data-
+availability table, not a search-engine snippet:
+  - The order-book URL is missing a market-type path segment. Confirmed
+    in two independent scripts in that repo (`download_orderbook.py`,
+    `download_orderbook_stream.py`), both hardcoding:
+    `https://quote-saver.bycsi.com/orderbook/spot/{SYMBOL}/{YYYY-MM-DD}_{SYMBOL}_ob200.data.zip`
+    — i.e. `.../orderbook/spot/...`, not `.../orderbook/{SYMBOL}/...`.
+    That missing `spot` segment is why the URL 404'd.
+  - **Bybit's order-book archive only exists from May 2025 onward**
+    (that repo's README: "Order Book | Available From: May 2025"; Trades
+    goes back to 2020). This adapter's old default date range
+    (2024-06-01..03) predates the archive entirely — it would have
+    404'd on the date alone even with the URL fixed. Defaults below are
+    now set inside the confirmed window.
+  - `linear` (Bybit's own category name for USDT perpetual futures,
+    used elsewhere in that same repo's klines downloader) is used here
+    for `market="futures"` by analogy — NOT independently confirmed for
+    the order-book endpoint specifically, since that repo's order-book
+    downloader only implements `spot`. If futures 404s, that segment is
+    the first thing to check.
+  - The JSONL record schema (`ts`, `cts`, `type` in {`snapshot`,`delta`},
+    nested `data.u`, `data.seq`, `data.b`, `data.a`) is confirmed by that
+    repo's `convert_to_parquet.py` parser and matches this file's
+    `_parse_orderbook_records` exactly — **no parsing-logic change was
+    needed**, only the URL and default dates. Confirmed depth/frequency:
+    200 levels per side, snapshots roughly every 200ms (per that repo's
+    README); this adapter still only keeps the top 5 levels and only
+    reads `snapshot` records (delta reconstruction remains a documented,
+    not-yet-built extension — see the `_parse_orderbook_records`
+    docstring).
+  - Trades URLs were NOT part of the reported failure and are unchanged:
+    `https://public.bybit.com/trading/{SYMBOL}/{SYMBOL}{YYYY-MM-DD}.csv.gz`
+    (futures) / `https://public.bybit.com/spot/{SYMBOL}/{SYMBOL}_{YYYY-MM-DD}.csv.gz`
+    (spot) — also independently confirmed by the same repo's README
+    (`Trades | public.bybit.com/spot`).
 
-What's NOT independently confirmed (single-source / inferred):
-  - The order-book archive's exact base URL/host is quote-saver.bycsi.com
-    per one search result, not public.bybit.com — the full directory path
-    under that host was not confirmed. `ORDERBOOK_BASE_URL` below is a
-    best-effort default; pass a corrected one once verified.
-  - Exact trades CSV column names (assumed here: timestamp, symbol, side,
-    size, price, tickDirection, trdMatchID, grossValue, homeNotional,
-    foreignNotional — the schema commonly documented by third-party Bybit
-    downloader tools).
+`check_connectivity()` now checks BOTH the trades and order-book URLs
+independently — it previously only checked trades, which is exactly how
+a broken order-book URL passed connectivity but failed on load().
 ===================================================================================
 
 LOCAL-FILE INGESTION: fetch()/load() check `cache_dir/raw/trades/` and
 `cache_dir/raw/orderbook/` for files already named exactly as Bybit
-itself names them (see the URL patterns above — the local filename is
-just the URL's last path component) BEFORE making any network call. So
-outside this sandbox you can either let this adapter download normally,
-or download the files yourself (browser, curl, Bybit's own bulk tools)
-and drop them into those two directories with their original names —
-either way the rest of the pipeline (features/models/trading) runs
-completely unmodified.
+itself names them (the local filename is just the URL's last path
+component, unaffected by the market-segment fix above) BEFORE making any
+network call. So outside this sandbox you can either let this adapter
+download normally, or download the files yourself (browser, curl,
+Bybit's own bulk tools) and drop them into those two directories with
+their original names — either way the rest of the pipeline
+(features/models/trading) runs completely unmodified.
 """
 
 from __future__ import annotations
@@ -73,7 +90,14 @@ from project_factory.data.verification import mark_verified
 
 TRADES_FUTURES_BASE_URL = "https://public.bybit.com/trading"
 TRADES_SPOT_BASE_URL = "https://public.bybit.com/spot"
-ORDERBOOK_BASE_URL = "https://quote-saver.bycsi.com/orderbook"  # NOT independently verified — see module docstring
+ORDERBOOK_BASE_URL = "https://quote-saver.bycsi.com/orderbook"
+"""Confirmed host+path shape via github.com/nssanta/Bybit-Download-OrderBook-Trades-Klines
+source (see module docstring) — the market-segment ("spot"/"linear") is
+appended by _orderbook_market_segment()."""
+
+ORDERBOOK_AVAILABLE_FROM = "2025-05-01"
+"""Per that same repo's README ("Order Book | Available From: May 2025").
+Requesting dates before this will 404 regardless of URL correctness."""
 
 DEFAULT_CACHE_DIR = Path(__file__).resolve().parent.parent.parent.parent / "data_cache" / "bybit_l2"
 SOURCE_NAME = "bybit_public_data"
@@ -85,8 +109,8 @@ class BybitPublicDataAdapter:
         symbol: str = "BTCUSDT",
         market: str = "spot",
         depth: int = 200,
-        start: str = "2024-06-01",
-        end: str = "2024-06-03",
+        start: str = "2025-06-01",
+        end: str = "2025-06-02",
         cache_dir: Path | None = None,
         timeout_seconds: float = 30.0,
     ):
@@ -96,7 +120,18 @@ class BybitPublicDataAdapter:
         signature (ProjectSpec's DataSpec has no date-range field), and
         mirrors how SyntheticMicrostructureAdapter takes its config
         (n_rows/seed) at construction time. Override the defaults by
-        registering a differently-configured instance."""
+        registering a differently-configured instance.
+
+        Defaults are inside the confirmed order-book availability window
+        (ORDERBOOK_AVAILABLE_FROM) — trades data goes back to 2020, but
+        the order-book archive does not, and requesting an out-of-range
+        date is a DataSourceHTTPError (404), not a code bug."""
+        if pd.Timestamp(start) < pd.Timestamp(ORDERBOOK_AVAILABLE_FROM):
+            raise ValueError(
+                f"start={start!r} is before the order-book archive's confirmed "
+                f"availability window ({ORDERBOOK_AVAILABLE_FROM}) — this would 404, "
+                f"not a code bug. Trades data goes back further if that's what you need."
+            )
         if market not in {"spot", "futures"}:
             raise ValueError(f"market must be 'spot' or 'futures', got {market!r}")
         self.symbol = symbol
@@ -116,20 +151,29 @@ class BybitPublicDataAdapter:
         return self.cache_dir / "raw" / "orderbook"
 
     def check_connectivity(self) -> None:
-        """Fail loudly and clearly if the archive isn't reachable, rather
-        than letting a downstream parse error obscure the real problem."""
-        url = self._trades_url(pd.Timestamp.now("UTC").normalize() - pd.Timedelta(days=2))
+        """Fail loudly and clearly if either archive isn't reachable,
+        rather than letting a downstream parse error obscure the real
+        problem. Checks trades AND order-book independently — checking
+        only one (as an earlier version of this adapter did) is exactly
+        how a broken order-book URL passed connectivity but 404'd on
+        load(): trades and order-book are served from different hosts,
+        so one being up says nothing about the other."""
+        recent = pd.Timestamp.now("UTC").normalize() - pd.Timedelta(days=2)
+        self._check_url("trades", self._trades_url(recent))
+        self._check_url("order-book", self._orderbook_url(recent))
+
+    def _check_url(self, label: str, url: str) -> None:
         try:
             resp = httpx.head(url, timeout=self.timeout_seconds, follow_redirects=True)
         except httpx.HTTPError as exc:
             raise DataSourceNetworkError(
-                f"could not reach {url}: {exc}. This adapter's URLs are unverified "
-                f"in the original development sandbox — see module docstring."
+                f"could not reach {label} endpoint {url}: {exc}. This adapter's URLs are "
+                f"unverified in the original development sandbox — see module docstring."
             ) from exc
         if resp.status_code >= 400:
             raise DataSourceHTTPError(
-                f"GET {url} returned HTTP {resp.status_code}. Check symbol/market/date "
-                f"and see the module docstring's verification-status notes."
+                f"GET {label} endpoint {url} returned HTTP {resp.status_code}. Check "
+                f"symbol/market/date and see the module docstring's verification-status notes."
             )
 
     def _trades_url(self, date: pd.Timestamp) -> str:
@@ -138,9 +182,17 @@ class BybitPublicDataAdapter:
             return f"{TRADES_FUTURES_BASE_URL}/{self.symbol}/{self.symbol}{date_str}.csv.gz"
         return f"{TRADES_SPOT_BASE_URL}/{self.symbol}/{self.symbol}_{date_str}.csv.gz"
 
+    def _orderbook_market_segment(self) -> str:
+        # "spot" confirmed directly (see module docstring); "linear" is
+        # Bybit's own category name for USDT perpetual futures, used by
+        # analogy from that same source repo's klines downloader — NOT
+        # independently confirmed for this specific endpoint.
+        return "spot" if self.market == "spot" else "linear"
+
     def _orderbook_url(self, date: pd.Timestamp) -> str:
         date_str = date.strftime("%Y-%m-%d")
-        return f"{ORDERBOOK_BASE_URL}/{self.symbol}/{date_str}_{self.symbol}_ob{self.depth}.data.zip"
+        segment = self._orderbook_market_segment()
+        return f"{ORDERBOOK_BASE_URL}/{segment}/{self.symbol}/{date_str}_{self.symbol}_ob{self.depth}.data.zip"
 
     def _get_bytes(self, url: str) -> bytes:
         try:
